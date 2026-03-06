@@ -1,0 +1,672 @@
+HTML
+import React, { useState } from 'react';
+import { 
+  LayoutDashboard, ShoppingCart, Factory, FileText, Plus, Trash2, 
+  TrendingUp, DollarSign, Clock, Sparkles, X, AlertCircle
+} from 'lucide-react';
+
+// 生成唯一ID的辅助函数
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  
+  // --- AI 状态管理 ---
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiModalContent, setAiModalContent] = useState(null);
+
+  // --- 业务数据状态 (模拟数据库，已升级为一单多品结构) ---
+  const [supplierContracts, setSupplierContracts] = useState([
+    { 
+      id: 'c1', contractNo: 'SC-2023-001', date: '2023-10-01', 
+      items: [
+        { id: 'si1', model: 'iPhone 15 Case', description: '硅胶手机壳', price: 1.5 },
+        { id: 'si2', model: 'iPhone 15 Pro Case', description: '透明防摔壳', price: 1.8 }
+      ] 
+    },
+  ]);
+
+  const [customerPOs, setCustomerPOs] = useState([
+    { 
+      id: 'p1', poNo: 'PO-US-992', date: '2023-10-10', 
+      items: [
+        { id: 'pi1', supplierItemId: 'si1', model: 'iPhone 15 Case', description: '硅胶手机壳 (带包装)', price: 4.5 },
+        { id: 'pi2', supplierItemId: 'si2', model: 'iPhone 15 Pro Case', description: '透明壳 (定制Logo)', price: 2.0 } // 低利润示例
+      ] 
+    },
+  ]);
+
+  const [shippingCIs, setShippingCIs] = useState([
+    { 
+      id: 'ci1', ciNo: 'CI-2310-01', date: '2023-10-15', paymentTerms: 30, 
+      items: [
+        { id: 'cii1', model: 'iPhone 15 系列手机壳', description: '首批出货总计', price: 6500.0 }
+      ] 
+    },
+  ]);
+
+  // --- 表单状态 ---
+  const [newContract, setNewContract] = useState({ contractNo: '', date: '', items: [{ id: generateId(), model: '', description: '', price: '' }] });
+  const [newPO, setNewPO] = useState({ poNo: '', date: '', items: [{ id: generateId(), supplierItemId: '', model: '', description: '', price: '' }] });
+  const [newCI, setNewCI] = useState({ ciNo: '', date: '', paymentTerms: '', items: [{ id: generateId(), model: '', description: '', price: '' }] });
+
+  // --- Gemini API 调用核心函数 ---
+  const callGeminiAPI = async (prompt) => {
+    const apiKey = ""; 
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    
+    try {
+      setAiLoading(true);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
+      if (!response.ok) throw new Error(`HTTP 错误: ${response.status}`);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message);
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    } catch (error) {
+      console.error("Gemini API Error:", error);
+      alert("AI 请求失败，请稍后再试或检查配置。\n错误信息: " + error.message);
+      return null;
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  // --- AI 功能: 生成催款信 ---
+  const handleGenerateEmail = async (ci) => {
+    const dueDate = calculateDueDate(ci.date, ci.paymentTerms);
+    const daysLeft = getDaysRemaining(dueDate);
+    const overdueText = daysLeft < 0 ? `已逾期 ${Math.abs(daysLeft)} 天` : `还有 ${daysLeft} 天到期`;
+    const totalAmount = ci.items.reduce((sum, item) => sum + parseFloat(item.price || 0), 0);
+    const productList = ci.items.map(i => `${i.model} (${i.description})`).join(', ');
+
+    const prompt = `你是一个资深的外贸财务经理。我有一笔给客户的商业发票 (CI) 需要催款。
+    发票号: ${ci.ciNo}
+    包含产品: ${productList}
+    总金额: $${totalAmount.toFixed(2)}
+    发货日期: ${ci.date}
+    账期: ${ci.paymentTerms} 天
+    状态: ${overdueText}
+
+    请帮我起草一封专业、礼貌但态度坚定的催款邮件。请先提供英文版本（包含邮件主题），然后提供对应的中文翻译。`;
+
+    const emailDraft = await callGeminiAPI(prompt);
+    if (emailDraft) {
+      setAiModalContent({ title: `✨ AI 催款信生成 (发票: ${ci.ciNo})`, content: emailDraft });
+    }
+  };
+
+  // --- AI 功能: 利润诊断专家 ---
+  const handleProfitAdvice = async (poNo, item) => {
+    const { cost, margin, profit } = calculateProfit(item.price, item.supplierItemId);
+    
+    const prompt = `你是一个资深的外贸商业顾问。订单 ${poNo} 中的某款产品利润率非常低，需要你的专业建议。
+    产品型号: ${item.model}
+    产品描述: ${item.description}
+    工厂采购成本: $${cost}
+    客户销售单价: $${item.price}
+    单件利润: $${profit.toFixed(2)}
+    当前利润率: ${margin.toFixed(1)}%
+
+    请针对这个情况，给我 3-4 条具体的、可落地的建议。包括：如何在下一单跟客户谈判涨价、如何跟工厂压价或优化成本、以及商业风险提示。使用清晰的排版和 Markdown 格式返回。`;
+
+    const advice = await callGeminiAPI(prompt);
+    if (advice) {
+      setAiModalContent({ title: `✨ AI 利润诊断专家 (产品: ${item.model})`, content: advice });
+    }
+  };
+
+  // --- 表单明细行操作 ---
+  const handleItemChange = (setter, stateObj, itemId, field, value) => {
+    setter({
+      ...stateObj,
+      items: stateObj.items.map(item => item.id === itemId ? { ...item, [field]: value } : item)
+    });
+  };
+
+  const handleAddItem = (setter, stateObj, emptyItemTemplate) => {
+    setter({ ...stateObj, items: [...stateObj.items, emptyItemTemplate] });
+  };
+
+  const handleRemoveItem = (setter, stateObj, itemId) => {
+    setter({ ...stateObj, items: stateObj.items.filter(item => item.id !== itemId) });
+  };
+
+  // --- 表单提交处理函数 ---
+  const handleAddContract = (e) => {
+    e.preventDefault();
+    if (newContract.items.length === 0) return alert("请至少添加一个产品！");
+    setSupplierContracts([...supplierContracts, { ...newContract, id: generateId() }]);
+    setNewContract({ contractNo: '', date: '', items: [{ id: generateId(), model: '', description: '', price: '' }] });
+  };
+
+  const handleAddPO = (e) => {
+    e.preventDefault();
+    if (newPO.items.length === 0) return alert("请至少添加一个产品！");
+    setCustomerPOs([...customerPOs, { ...newPO, id: generateId() }]);
+    setNewPO({ poNo: '', date: '', items: [{ id: generateId(), supplierItemId: '', model: '', description: '', price: '' }] });
+  };
+
+  const handleAddCI = (e) => {
+    e.preventDefault();
+    if (newCI.items.length === 0) return alert("请至少添加一个产品！");
+    setShippingCIs([...shippingCIs, { ...newCI, id: generateId() }]);
+    setNewCI({ ciNo: '', date: '', paymentTerms: '', items: [{ id: generateId(), model: '', description: '', price: '' }] });
+  };
+
+  // --- 辅助计算函数 ---
+  const calculateProfit = (poPrice, supplierItemId) => {
+    let cost = 0;
+    for (const contract of supplierContracts) {
+      const item = contract.items.find(i => i.id === supplierItemId);
+      if (item) {
+        cost = parseFloat(item.price);
+        break;
+      }
+    }
+    const price = parseFloat(poPrice || 0);
+    const profit = price - cost;
+    const margin = price > 0 ? (profit / price) * 100 : 0;
+    return { profit, margin, cost };
+  };
+
+  const calculateDueDate = (dateStr, terms) => {
+    if (!dateStr || !terms) return null;
+    const date = new Date(dateStr);
+    date.setDate(date.getDate() + parseInt(terms, 10));
+    return date;
+  };
+
+  const getDaysRemaining = (dueDate) => {
+    if (!dueDate) return 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffTime = dueDate.getTime() - today.getTime();
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  };
+
+  // --- 视图组件 ---
+  const renderDashboard = () => {
+    // 计算所有 PO 中的所有产品的总额和总利润
+    let totalPORenueve = 0;
+    let totalProfit = 0;
+    
+    customerPOs.forEach(po => {
+      po.items.forEach(item => {
+        const price = parseFloat(item.price || 0);
+        totalPORenueve += price;
+        totalProfit += calculateProfit(price, item.supplierItemId).profit;
+      });
+    });
+    
+    const avgMargin = totalPORenueve > 0 ? (totalProfit / totalPORenueve) * 100 : 0;
+
+    const reminders = shippingCIs.map(ci => {
+      const dueDate = calculateDueDate(ci.date, ci.paymentTerms);
+      const daysLeft = getDaysRemaining(dueDate);
+      const totalAmount = ci.items.reduce((sum, item) => sum + parseFloat(item.price || 0), 0);
+      return { ...ci, dueDate, daysLeft, totalAmount };
+    }).sort((a, b) => a.daysLeft - b.daysLeft);
+
+    return (
+      <div className="space-y-6 animate-in fade-in duration-500">
+        <h2 className="text-2xl font-bold text-slate-800">业务概览与提醒</h2>
+        
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-4">
+            <div className="p-3 bg-blue-50 text-blue-600 rounded-xl"><DollarSign size={24} /></div>
+            <div>
+              <p className="text-sm text-slate-500 font-medium">PO 预估总额 (单件求和)</p>
+              <p className="text-2xl font-bold text-slate-800">${totalPORenueve.toFixed(2)}</p>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-4">
+            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl"><TrendingUp size={24} /></div>
+            <div>
+              <p className="text-sm text-slate-500 font-medium">预估总利润</p>
+              <p className="text-2xl font-bold text-slate-800">${totalProfit.toFixed(2)}</p>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-4">
+            <div className="p-3 bg-purple-50 text-purple-600 rounded-xl"><Factory size={24} /></div>
+            <div>
+              <p className="text-sm text-slate-500 font-medium">平均利润率</p>
+              <p className="text-2xl font-bold text-slate-800">{avgMargin.toFixed(2)}%</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="p-5 border-b border-slate-100 flex items-center space-x-2">
+            <Clock className="text-orange-500" size={20} />
+            <h3 className="text-lg font-semibold text-slate-800">收款到期提醒</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse min-w-[800px]">
+              <thead>
+                <tr className="bg-slate-50 text-slate-500 text-sm">
+                  <th className="p-4 font-medium border-b border-slate-100">CI 号码</th>
+                  <th className="p-4 font-medium border-b border-slate-100">发货明细</th>
+                  <th className="p-4 font-medium border-b border-slate-100">总金额</th>
+                  <th className="p-4 font-medium border-b border-slate-100">账期 / 到期日</th>
+                  <th className="p-4 font-medium border-b border-slate-100">状态</th>
+                  <th className="p-4 font-medium border-b border-slate-100 w-32">AI 助手</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reminders.map((ci) => (
+                  <tr key={ci.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                    <td className="p-4 font-medium text-indigo-600">{ci.ciNo}</td>
+                    <td className="p-4">
+                      {ci.items.map(i => (
+                        <div key={i.id} className="text-sm text-slate-800">{i.model} <span className="text-xs text-slate-400">({i.description})</span></div>
+                      ))}
+                    </td>
+                    <td className="p-4 font-semibold text-slate-700">${ci.totalAmount.toFixed(2)}</td>
+                    <td className="p-4">
+                       <div className="text-sm text-slate-600">{ci.paymentTerms} 天</div>
+                       <div className="text-xs text-slate-500 font-medium">{ci.dueDate?.toLocaleDateString()}</div>
+                    </td>
+                    <td className="p-4">
+                      {ci.daysLeft < 0 ? (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-600 border border-red-100">逾期 {Math.abs(ci.daysLeft)} 天</span>
+                      ) : ci.daysLeft <= 7 ? (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-orange-50 text-orange-600 border border-orange-100">即将到期 ({ci.daysLeft}天)</span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-600 border border-emerald-100">正常 ({ci.daysLeft}天)</span>
+                      )}
+                    </td>
+                    <td className="p-4">
+                      {(ci.daysLeft <= 7) && (
+                        <button onClick={() => handleGenerateEmail(ci)} disabled={aiLoading} className="flex items-center text-xs px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 transition-colors disabled:opacity-50 font-medium">
+                          <Sparkles size={12} className="mr-1" /> 起草催款信
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderCustomerPOs = () => (
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <h2 className="text-2xl font-bold text-slate-800">客户订单 (PO)</h2>
+      
+      {/* 录入表单 */}
+      <form onSubmit={handleAddPO} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+        {/* 主单信息 */}
+        <div className="flex gap-4 mb-6 border-b border-slate-100 pb-4">
+          <div className="flex-1 space-y-1">
+            <label className="text-sm text-slate-600 font-medium">PO 号</label>
+            <input required type="text" value={newPO.poNo} onChange={e => setNewPO({...newPO, poNo: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="输入客户 PO 编号..." />
+          </div>
+          <div className="flex-1 space-y-1">
+            <label className="text-sm text-slate-600 font-medium">下单日期</label>
+            <input required type="date" value={newPO.date} onChange={e => setNewPO({...newPO, date: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+          </div>
+        </div>
+
+        {/* 产品明细 */}
+        <div className="space-y-3">
+          <label className="text-sm text-slate-600 font-medium block">产品明细</label>
+          {newPO.items.map((item, index) => (
+            <div key={item.id} className="grid grid-cols-12 gap-3 items-start">
+              <div className="col-span-3">
+                <select required value={item.supplierItemId} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'supplierItemId', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
+                  <option value="">选择关联工厂产品 (成本基准)...</option>
+                  {supplierContracts.map(c => c.items.map(i => (
+                    <option key={i.id} value={i.id}>[{c.contractNo}] - {i.model}</option>
+                  )))}
+                </select>
+              </div>
+              <div className="col-span-3">
+                <input required type="text" placeholder="产品型号" value={item.model} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'model', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-3">
+                <input type="text" placeholder="描述 / 备注" value={item.description} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'description', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-2">
+                <input required type="number" step="0.01" placeholder="售价" value={item.price} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'price', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-1 pt-1">
+                {newPO.items.length > 1 && (
+                  <button type="button" onClick={() => handleRemoveItem(setNewPO, newPO, item.id)} className="p-2 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors" title="删除明细">
+                    <Trash2 size={18} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-between mt-6">
+          <button type="button" onClick={() => handleAddItem(setNewPO, newPO, { id: generateId(), supplierItemId: '', model: '', description: '', price: '' })} className="text-indigo-600 font-medium text-sm flex items-center px-3 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors">
+            <Plus size={16} className="mr-1" /> 添加一个产品
+          </button>
+          <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg hover:bg-slate-900 flex items-center transition-colors shadow-sm">
+            保存完整订单
+          </button>
+        </div>
+      </form>
+
+      {/* 数据列表 */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse min-w-[900px]">
+            <thead>
+              <tr className="bg-slate-50 text-slate-500 text-sm">
+                <th className="p-4 font-medium border-b border-slate-100">型号 / 描述</th>
+                <th className="p-4 font-medium border-b border-slate-100">售价 / 成本</th>
+                <th className="p-4 font-medium border-b border-slate-100">单件利润</th>
+                <th className="p-4 font-medium border-b border-slate-100">利润率</th>
+                <th className="p-4 font-medium border-b border-slate-100 text-right w-40">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {customerPOs.map((po) => (
+                <React.Fragment key={po.id}>
+                  {/* 分组头 */}
+                  <tr className="bg-slate-100 border-b border-slate-200">
+                    <td colSpan="4" className="p-3 pl-4 font-bold text-slate-700 text-sm">
+                      <span className="text-indigo-600 mr-4">PO 号: {po.poNo}</span> 
+                      <span className="text-slate-500 font-normal">下单日期: {po.date}</span>
+                    </td>
+                    <td className="p-2 text-right">
+                      <button onClick={() => setCustomerPOs(customerPOs.filter(item => item.id !== po.id))} className="text-xs text-red-500 hover:text-red-700 px-3 py-1 font-medium">删除整单</button>
+                    </td>
+                  </tr>
+                  {/* 产品明细 */}
+                  {po.items.map(item => {
+                    const { profit, margin, cost } = calculateProfit(item.price, item.supplierItemId);
+                    const isLowMargin = margin < 15;
+                    return (
+                      <tr key={item.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors group">
+                        <td className="p-4 pl-8">
+                          <div className="font-medium text-slate-800">{item.model}</div>
+                          <div className="text-xs text-slate-400">{item.description}</div>
+                        </td>
+                        <td className="p-4">
+                          <div className="font-semibold text-emerald-600">${parseFloat(item.price).toFixed(2)} <span className="text-xs text-slate-400 font-normal ml-1">(售)</span></div>
+                          <div className="text-sm text-slate-500">${cost.toFixed(2)} <span className="text-xs text-slate-400 ml-1">(本)</span></div>
+                        </td>
+                        <td className="p-4 font-bold text-slate-700">${profit.toFixed(2)}</td>
+                        <td className="p-4">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${margin >= 30 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : margin >= 15 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-orange-50 text-orange-600 border-orange-100'}`}>
+                            {margin.toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="p-4 text-right">
+                           {isLowMargin && (
+                              <button onClick={() => handleProfitAdvice(po.poNo, item)} title="利润过低，请求 AI 建议" className="p-1.5 text-orange-500 hover:bg-orange-50 rounded-lg transition-colors border border-transparent hover:border-orange-200">
+                                <Sparkles size={18} />
+                              </button>
+                            )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderSupplierContracts = () => (
+    <div className="space-y-6 animate-in fade-in duration-500">
+       <h2 className="text-2xl font-bold text-slate-800">工厂采购合同 (SC)</h2>
+       
+       <form onSubmit={handleAddContract} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+        <div className="flex gap-4 mb-6 border-b border-slate-100 pb-4">
+          <div className="flex-1 space-y-1">
+            <label className="text-sm text-slate-600 font-medium">工厂合同号</label>
+            <input required type="text" value={newContract.contractNo} onChange={e => setNewContract({...newContract, contractNo: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="输入采购合同编号..." />
+          </div>
+          <div className="flex-1 space-y-1">
+            <label className="text-sm text-slate-600 font-medium">签订日期</label>
+            <input required type="date" value={newContract.date} onChange={e => setNewContract({...newContract, date: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-sm text-slate-600 font-medium block">采购产品明细 (作为成本基准)</label>
+          {newContract.items.map((item) => (
+            <div key={item.id} className="grid grid-cols-12 gap-3 items-start">
+              <div className="col-span-4">
+                <input required type="text" placeholder="产品型号" value={item.model} onChange={e => handleItemChange(setNewContract, newContract, item.id, 'model', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-4">
+                <input type="text" placeholder="描述 / 备注" value={item.description} onChange={e => handleItemChange(setNewContract, newContract, item.id, 'description', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-3">
+                <input required type="number" step="0.01" placeholder="采购单价 (成本)" value={item.price} onChange={e => handleItemChange(setNewContract, newContract, item.id, 'price', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-1 pt-1">
+                {newContract.items.length > 1 && (
+                  <button type="button" onClick={() => handleRemoveItem(setNewContract, newContract, item.id)} className="p-2 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors">
+                    <Trash2 size={18} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-between mt-6">
+          <button type="button" onClick={() => handleAddItem(setNewContract, newContract, { id: generateId(), model: '', description: '', price: '' })} className="text-indigo-600 font-medium text-sm flex items-center px-3 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors">
+            <Plus size={16} className="mr-1" /> 添加一个产品
+          </button>
+          <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg hover:bg-slate-900 flex items-center transition-colors shadow-sm">
+            保存完整合同
+          </button>
+        </div>
+      </form>
+
+       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <table className="w-full text-left border-collapse min-w-[800px]">
+          <thead>
+            <tr className="bg-slate-50 text-slate-500 text-sm">
+              <th className="p-4 font-medium border-b border-slate-100">型号 / 描述</th>
+              <th className="p-4 font-medium border-b border-slate-100">采购单价 (成本)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {supplierContracts.map((contract) => (
+              <React.Fragment key={contract.id}>
+                <tr className="bg-slate-100 border-b border-slate-200">
+                  <td className="p-3 pl-4 font-bold text-slate-700 text-sm">
+                    <span className="text-indigo-600 mr-4">合同号: {contract.contractNo}</span> 
+                    <span className="text-slate-500 font-normal">签订日期: {contract.date}</span>
+                  </td>
+                  <td className="p-2 text-right">
+                    <button onClick={() => setSupplierContracts(supplierContracts.filter(item => item.id !== contract.id))} className="text-xs text-red-500 hover:text-red-700 px-3 py-1 font-medium">删除合同</button>
+                  </td>
+                </tr>
+                {contract.items.map(item => (
+                  <tr key={item.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                    <td className="p-4 pl-8">
+                      <div className="font-medium text-slate-800">{item.model}</div>
+                      <div className="text-xs text-slate-400">{item.description}</div>
+                    </td>
+                    <td className="p-4 font-semibold text-slate-600">${parseFloat(item.price).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  const renderShippingCIs = () => (
+    <div className="space-y-6 animate-in fade-in duration-500">
+       <h2 className="text-2xl font-bold text-slate-800">发货出单 (CI)</h2>
+       
+       <form onSubmit={handleAddCI} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+        <div className="flex gap-4 mb-6 border-b border-slate-100 pb-4">
+          <div className="flex-1 space-y-1">
+            <label className="text-sm text-slate-600 font-medium">CI 号码</label>
+            <input required type="text" value={newCI.ciNo} onChange={e => setNewCI({...newCI, ciNo: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="输入商业发票号..." />
+          </div>
+          <div className="flex-1 space-y-1">
+            <label className="text-sm text-slate-600 font-medium">发货日期</label>
+            <input required type="date" value={newCI.date} onChange={e => setNewCI({...newCI, date: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+          </div>
+          <div className="flex-1 space-y-1">
+            <label className="text-sm text-slate-600 font-medium">账期约定 (天)</label>
+            <input required type="number" min="0" value={newCI.paymentTerms} onChange={e => setNewCI({...newCI, paymentTerms: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="例如: 30" />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-sm text-slate-600 font-medium block">发货明细项目</label>
+          {newCI.items.map((item) => (
+            <div key={item.id} className="grid grid-cols-12 gap-3 items-start">
+              <div className="col-span-4">
+                <input required type="text" placeholder="发货产品型号 / 项目名" value={item.model} onChange={e => handleItemChange(setNewCI, newCI, item.id, 'model', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-4">
+                <input type="text" placeholder="描述 / 备注" value={item.description} onChange={e => handleItemChange(setNewCI, newCI, item.id, 'description', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-3">
+                <input required type="number" step="0.01" placeholder="该项总金额 / 单价" value={item.price} onChange={e => handleItemChange(setNewCI, newCI, item.id, 'price', e.target.value)} className="w-full p-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+              </div>
+              <div className="col-span-1 pt-1">
+                {newCI.items.length > 1 && (
+                  <button type="button" onClick={() => handleRemoveItem(setNewCI, newCI, item.id)} className="p-2 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors">
+                    <Trash2 size={18} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-between mt-6">
+          <button type="button" onClick={() => handleAddItem(setNewCI, newCI, { id: generateId(), model: '', description: '', price: '' })} className="text-indigo-600 font-medium text-sm flex items-center px-3 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors">
+            <Plus size={16} className="mr-1" /> 添加发货明细
+          </button>
+          <button type="submit" className="bg-slate-800 text-white px-6 py-2.5 rounded-lg hover:bg-slate-900 flex items-center transition-colors shadow-sm">
+            保存发货出单
+          </button>
+        </div>
+      </form>
+
+       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-6">
+        <table className="w-full text-left border-collapse min-w-[800px]">
+          <thead>
+            <tr className="bg-slate-50 text-slate-500 text-sm">
+              <th className="p-4 font-medium border-b border-slate-100">发货明细 / 描述</th>
+              <th className="p-4 font-medium border-b border-slate-100">该项金额</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shippingCIs.map((ci) => (
+              <React.Fragment key={ci.id}>
+                <tr className="bg-slate-100 border-b border-slate-200">
+                  <td className="p-3 pl-4 font-bold text-slate-700 text-sm">
+                    <span className="text-indigo-600 mr-4">CI 号: {ci.ciNo}</span> 
+                    <span className="text-slate-500 font-normal mr-4">发货日: {ci.date}</span>
+                    <span className="text-slate-500 font-normal">账期: {ci.paymentTerms} 天</span>
+                  </td>
+                  <td className="p-2 text-right">
+                    <button onClick={() => setShippingCIs(shippingCIs.filter(item => item.id !== ci.id))} className="text-xs text-red-500 hover:text-red-700 px-3 py-1 font-medium">删除出单</button>
+                  </td>
+                </tr>
+                {ci.items.map(item => (
+                  <tr key={item.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                    <td className="p-4 pl-8">
+                      <div className="font-medium text-slate-800">{item.model}</div>
+                      <div className="text-xs text-slate-400">{item.description}</div>
+                    </td>
+                    <td className="p-4 font-semibold text-slate-600">${parseFloat(item.price).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50/50 text-slate-900 font-sans flex flex-col md:flex-row">
+      {/* 侧边栏 */}
+      <div className="w-full md:w-64 bg-white border-r border-slate-200 shadow-sm flex-shrink-0 z-10">
+        <div className="p-6">
+          <h1 className="text-xl font-bold text-indigo-600 flex items-center">
+            <span className="bg-indigo-50 p-2 rounded-xl mr-2"><TrendingUp size={20} className="text-indigo-500" /></span>
+            外贸订单管家
+          </h1>
+        </div>
+        <nav className="p-4 space-y-1">
+          <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center p-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-indigo-50 text-indigo-700 font-semibold' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+            <LayoutDashboard size={18} className="mr-3" /> 概览与提醒
+          </button>
+          <button onClick={() => setActiveTab('customer_pos')} className={`w-full flex items-center p-3 rounded-xl transition-all ${activeTab === 'customer_pos' ? 'bg-indigo-50 text-indigo-700 font-semibold' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+            <ShoppingCart size={18} className="mr-3" /> 客户订单 (PO)
+          </button>
+          <button onClick={() => setActiveTab('supplier_contracts')} className={`w-full flex items-center p-3 rounded-xl transition-all ${activeTab === 'supplier_contracts' ? 'bg-indigo-50 text-indigo-700 font-semibold' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+            <Factory size={18} className="mr-3" /> 工厂合同 (SC)
+          </button>
+          <button onClick={() => setActiveTab('shipping_cis')} className={`w-full flex items-center p-3 rounded-xl transition-all ${activeTab === 'shipping_cis' ? 'bg-indigo-50 text-indigo-700 font-semibold' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}>
+            <FileText size={18} className="mr-3" /> 发货出单 (CI)
+          </button>
+        </nav>
+      </div>
+
+      {/* 主内容区 */}
+      <div className="flex-1 p-6 md:p-8 overflow-y-auto">
+        <div className="max-w-6xl mx-auto pb-20">
+          {activeTab === 'dashboard' && renderDashboard()}
+          {activeTab === 'customer_pos' && renderCustomerPOs()}
+          {activeTab === 'supplier_contracts' && renderSupplierContracts()}
+          {activeTab === 'shipping_cis' && renderShippingCIs()}
+        </div>
+      </div>
+
+      {/* AI 结果通用弹窗 */}
+      {aiModalContent && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-indigo-50/50">
+              <h3 className="font-bold text-indigo-900 text-lg">{aiModalContent.title}</h3>
+              <button onClick={() => setAiModalContent(null)} className="p-2 hover:bg-indigo-100 rounded-full text-indigo-400 transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto whitespace-pre-wrap text-slate-700 text-sm leading-relaxed font-mono">
+              {aiModalContent.content}
+            </div>
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button onClick={() => setAiModalContent(null)} className="px-5 py-2 bg-slate-800 text-white rounded-xl hover:bg-slate-900 transition-colors">
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>WincoTek Product Demo</title>
+</head>
+<body>
+    </body>
+</html>
