@@ -9,14 +9,13 @@
     <!-- 引入 React 和 ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <!-- 引入 Babel 以在浏览器中编译 JSX -->
+    <!-- 引入 Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8fafc; }
         .fade-in { animation: fadeIn 0.4s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        /* 自定义滚动条 */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
@@ -42,7 +41,6 @@
         const IconDownload = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>;
         const IconUpload = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>;
 
-        // --- 2. 核心辅助函数 ---
         const generateId = () => Math.random().toString(36).substr(2, 9);
         
         function useLocalStorage(key, initialValue) {
@@ -51,7 +49,6 @@
                     const item = window.localStorage.getItem(key);
                     return item ? JSON.parse(item) : initialValue;
                 } catch (error) {
-                    console.error("读取本地存储失败:", error);
                     return initialValue;
                 }
             });
@@ -61,31 +58,31 @@
                     const valueToStore = value instanceof Function ? value(storedValue) : value;
                     setStoredValue(valueToStore);
                     window.localStorage.setItem(key, JSON.stringify(valueToStore));
-                } catch (error) {
-                    console.error("写入本地存储失败:", error);
-                }
+                } catch (error) {}
             };
-
             return [storedValue, setValue];
         }
 
-        // --- 3. 主应用组件 ---
+        // --- 主应用组件 ---
         function App() {
             const [activeTab, setActiveTab] = useState('dashboard');
 
-            // --- 数据持久化状态 ---
-            const [supplierContracts, setSupplierContracts] = useLocalStorage('app_contracts', []);
-            const [customerPOs, setCustomerPOs] = useLocalStorage('app_pos', []);
-            const [shippingCIs, setShippingCIs] = useLocalStorage('app_cis', []);
+            // --- 数据持久化状态 (修改了Key避免旧数据冲突) ---
+            const [customerPOs, setCustomerPOs] = useLocalStorage('app_pos_v3', []);
+            const [supplierContracts, setSupplierContracts] = useLocalStorage('app_contracts_v3', []);
+            const [shippingCIs, setShippingCIs] = useLocalStorage('app_cis_v3', []);
 
-            // --- 表单当前输入状态 (新增了 quantity 字段) ---
-            const [newContract, setNewContract] = useState({ contractNo: '', date: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
-            const [newPO, setNewPO] = useState({ poNo: '', date: '', items: [{ id: generateId(), supplierItemId: '', model: '', description: '', quantity: 1, price: '' }] });
-            const [newCI, setNewCI] = useState({ ciNo: '', poId: '', date: '', paymentTerms: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
+            // --- 录入表单状态 ---
+            // PO 是核心，只录入一次产品型号、描述、售价
+            const [newPO, setNewPO] = useState({ poNo: '', date: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
+            // SC 关联 PO，只需要输入各项成本
+            const [newContract, setNewContract] = useState({ poId: '', contractNo: '', date: '', items: [] });
+            // CI 关联 PO，只需要输入各项发货数量
+            const [newCI, setNewCI] = useState({ poId: '', ciNo: '', date: '', paymentTerms: '', items: [] });
 
             // --- 数据导入导出 ---
             const handleExport = () => {
-                const data = { supplierContracts, customerPOs, shippingCIs };
+                const data = { customerPOs, supplierContracts, shippingCIs };
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -101,76 +98,91 @@
                 reader.onload = (event) => {
                     try {
                         const data = JSON.parse(event.target.result);
-                        if (data.supplierContracts) setSupplierContracts(data.supplierContracts);
                         if (data.customerPOs) setCustomerPOs(data.customerPOs);
+                        if (data.supplierContracts) setSupplierContracts(data.supplierContracts);
                         if (data.shippingCIs) setShippingCIs(data.shippingCIs);
                         alert("数据导入成功！");
-                    } catch (err) {
-                        alert("文件格式不正确，导入失败。");
-                    }
+                    } catch (err) { alert("文件格式不正确，导入失败。"); }
                 };
                 reader.readAsText(file);
             };
 
-            // --- 表单明细操作 ---
+            // --- 获取 PO 原始项目数据 ---
+            const getPoItem = (poId, poItemId) => {
+                const po = customerPOs.find(p => p.id === poId);
+                return po?.items.find(i => i.id === poItemId) || {};
+            };
+
+            const getPoCost = (poId, poItemId) => {
+                const sc = supplierContracts.find(c => c.poId === poId);
+                const scItem = sc?.items.find(i => i.poItemId === poItemId);
+                return parseFloat(scItem?.cost || 0);
+            };
+
+            // --- 表单联动处理 ---
+            const handlePoChangeForSC = (poId) => {
+                const po = customerPOs.find(p => p.id === poId);
+                if (po) {
+                    setNewContract({ ...newContract, poId, items: po.items.map(i => ({ poItemId: i.id, cost: '' })) });
+                } else {
+                    setNewContract({ poId: '', contractNo: '', date: '', items: [] });
+                }
+            };
+
+            const handlePoChangeForCI = (poId) => {
+                const po = customerPOs.find(p => p.id === poId);
+                if (po) {
+                    // 智能计算剩余未发数量作为默认值
+                    const relatedCIs = shippingCIs.filter(ci => ci.poId === poId);
+                    const itemsWithQty = po.items.map(poItem => {
+                        const alreadyShipped = relatedCIs.reduce((sum, ci) => {
+                            const ciItem = ci.items.find(i => i.poItemId === poItem.id);
+                            return sum + (parseFloat(ciItem?.shipQty || 0));
+                        }, 0);
+                        const remaining = Math.max(0, parseFloat(poItem.quantity || 1) - alreadyShipped);
+                        return { poItemId: poItem.id, shipQty: remaining };
+                    });
+                    setNewCI({ ...newCI, poId, items: itemsWithQty });
+                } else {
+                    setNewCI({ poId: '', ciNo: '', date: '', paymentTerms: '', items: [] });
+                }
+            };
+
             const handleItemChange = (setter, stateObj, itemId, field, value) => {
-                setter({
-                    ...stateObj,
-                    items: stateObj.items.map(item => item.id === itemId ? { ...item, [field]: value } : item)
-                });
-            };
-
-            const handleAddItem = (setter, stateObj, emptyItemTemplate) => {
-                setter({ ...stateObj, items: [...stateObj.items, emptyItemTemplate] });
-            };
-
-            const handleRemoveItem = (setter, stateObj, itemId) => {
-                setter({ ...stateObj, items: stateObj.items.filter(item => item.id !== itemId) });
+                setter({ ...stateObj, items: stateObj.items.map(item => (item.id === itemId || item.poItemId === itemId) ? { ...item, [field]: value } : item) });
             };
 
             // --- 提交处理 ---
-            const handleAddContract = (e) => {
-                e.preventDefault();
-                if (newContract.items.length === 0) return alert("请至少添加一个产品！");
-                setSupplierContracts([{ ...newContract, id: generateId() }, ...supplierContracts]);
-                setNewContract({ contractNo: '', date: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
-                alert("工厂合同保存成功！");
-            };
-
             const handleAddPO = (e) => {
                 e.preventDefault();
-                if (newPO.items.length === 0) return alert("请至少添加一个产品！");
                 setCustomerPOs([{ ...newPO, id: generateId() }, ...customerPOs]);
-                setNewPO({ poNo: '', date: '', items: [{ id: generateId(), supplierItemId: '', model: '', description: '', quantity: 1, price: '' }] });
-                alert("客户订单保存成功！");
+                setNewPO({ poNo: '', date: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
+                alert("客户订单保存成功！请前往SC或CI模块继续操作。");
+            };
+
+            const handleAddContract = (e) => {
+                e.preventDefault();
+                if (!newContract.poId) return alert("请先选择关联的客户订单 (PO)！");
+                setSupplierContracts([{ ...newContract, id: generateId() }, ...supplierContracts]);
+                setNewContract({ poId: '', contractNo: '', date: '', items: [] });
+                alert("工厂合同/成本记录保存成功！");
             };
 
             const handleAddCI = (e) => {
                 e.preventDefault();
-                if (newCI.items.length === 0) return alert("请至少添加一个产品！");
-                if (!newCI.poId) return alert("请选择关联的客户订单 (PO)！");
-                setShippingCIs([{ ...newCI, id: generateId() }, ...shippingCIs]);
-                setNewCI({ ciNo: '', poId: '', date: '', paymentTerms: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
+                if (!newCI.poId) return alert("请先选择关联的客户订单 (PO)！");
+                // 过滤掉发货数量为 0 的项
+                const validItems = newCI.items.filter(i => parseFloat(i.shipQty) > 0);
+                if (validItems.length === 0) return alert("所有产品的发货数量均为 0，无法保存！");
+                setShippingCIs([{ ...newCI, items: validItems, id: generateId() }, ...shippingCIs]);
+                setNewCI({ poId: '', ciNo: '', date: '', paymentTerms: '', items: [] });
                 alert("发货出单保存成功！");
             };
 
-            // --- 辅助计算 (加入数量逻辑) ---
-            const calculateProfit = (poPrice, poQuantity, supplierItemId) => {
-                let cost = 0;
-                for (const contract of supplierContracts) {
-                    const item = contract.items.find(i => i.id === supplierItemId);
-                    if (item) { cost = parseFloat(item.price || 0); break; }
-                }
-                const price = parseFloat(poPrice || 0);
-                const qty = parseFloat(poQuantity || 1); // 兼容旧数据，默认数量为1
-                
-                const unitProfit = price - cost;
-                const totalProfit = unitProfit * qty;
-                const margin = price > 0 ? (unitProfit / price) * 100 : 0;
-                
-                return { unitProfit, totalProfit, margin, cost, qty };
-            };
+            const togglePoCompleted = (id) => setCustomerPOs(customerPOs.map(po => po.id === id ? { ...po, isCompleted: !po.isCompleted } : po));
+            const toggleCiPaid = (id) => setShippingCIs(shippingCIs.map(ci => ci.id === id ? { ...ci, isPaid: !ci.isPaid } : ci));
 
+            // --- 辅助计算 ---
             const calculateDueDate = (dateStr, terms) => {
                 if (!dateStr || terms === '') return null;
                 const date = new Date(dateStr);
@@ -195,26 +207,21 @@
                     po.items.forEach(item => {
                         const price = parseFloat(item.price || 0);
                         const qty = parseFloat(item.quantity || 1);
+                        const cost = getPoCost(po.id, item.id);
                         totalPORenueve += (price * qty);
-                        totalProfit += calculateProfit(price, qty, item.supplierItemId).totalProfit;
+                        totalProfit += ((price - cost) * qty);
                     });
                 });
-                
                 const avgMargin = totalPORenueve > 0 ? (totalProfit / totalPORenueve) * 100 : 0;
 
-                const reminders = shippingCIs.map(ci => {
-                    const dueDate = calculateDueDate(ci.date, ci.paymentTerms);
-                    const daysLeft = getDaysRemaining(dueDate);
-                    const totalAmount = ci.items.reduce((sum, item) => sum + (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)), 0);
-                    return { ...ci, dueDate, daysLeft, totalAmount };
-                }).sort((a, b) => a.daysLeft - b.daysLeft);
-
-                // --- 新增：PO发货进度追踪数据计算 ---
                 const poProgress = customerPOs.map(po => {
                     const totalAmount = po.items.reduce((sum, item) => sum + (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)), 0);
                     const relatedCIs = shippingCIs.filter(ci => ci.poId === po.id);
                     const shippedAmount = relatedCIs.reduce((sum, ci) => {
-                        return sum + ci.items.reduce((ciSum, item) => ciSum + (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)), 0);
+                        return sum + ci.items.reduce((ciSum, ciItem) => {
+                            const poItem = getPoItem(po.id, ciItem.poItemId);
+                            return ciSum + (parseFloat(poItem.price || 0) * parseFloat(ciItem.shipQty || 0));
+                        }, 0);
                     }, 0);
                     const pendingAmount = totalAmount - shippedAmount;
                     
@@ -222,7 +229,22 @@
                     if (shippedAmount >= totalAmount && totalAmount > 0) status = '已发完';
                     else if (shippedAmount > 0) status = '部分发货';
 
-                    return { id: po.id, poNo: po.poNo, totalAmount, shippedAmount, pendingAmount, status };
+                    return { id: po.id, poNo: po.poNo, totalAmount, shippedAmount, pendingAmount, status, isCompleted: po.isCompleted };
+                });
+
+                const reminders = shippingCIs.map(ci => {
+                    const dueDate = calculateDueDate(ci.date, ci.paymentTerms);
+                    const daysLeft = getDaysRemaining(dueDate);
+                    const po = customerPOs.find(p => p.id === ci.poId);
+                    const totalAmount = ci.items.reduce((sum, ciItem) => {
+                        const poItem = getPoItem(ci.poId, ciItem.poItemId);
+                        return sum + (parseFloat(poItem.price || 0) * parseFloat(ciItem.shipQty || 0));
+                    }, 0);
+                    return { ...ci, poNo: po?.poNo || '未知PO', dueDate, daysLeft, totalAmount };
+                }).sort((a, b) => {
+                    if (a.isPaid && !b.isPaid) return 1;
+                    if (!a.isPaid && b.isPaid) return -1;
+                    return a.daysLeft - b.daysLeft;
                 });
 
                 return (
@@ -232,62 +254,43 @@
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center space-x-4">
                                 <div className="p-3 bg-blue-50 text-blue-600 rounded-xl"><IconDollar /></div>
-                                <div>
-                                    <p className="text-sm text-slate-500 font-medium">总销售额预估 (US$)</p>
-                                    <p className="text-2xl font-bold text-slate-800">{totalPORenueve.toFixed(2)}</p>
-                                </div>
+                                <div><p className="text-sm text-slate-500 font-medium">总销售额预估 (US$)</p><p className="text-2xl font-bold text-slate-800">{totalPORenueve.toFixed(2)}</p></div>
                             </div>
                             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center space-x-4">
                                 <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl"><IconTrend /></div>
-                                <div>
-                                    <p className="text-sm text-slate-500 font-medium">预估总利润 (US$)</p>
-                                    <p className="text-2xl font-bold text-slate-800">{totalProfit.toFixed(2)}</p>
-                                </div>
+                                <div><p className="text-sm text-slate-500 font-medium">预估总利润 (US$)</p><p className="text-2xl font-bold text-slate-800">{totalProfit.toFixed(2)}</p></div>
                             </div>
                             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center space-x-4">
                                 <div className="p-3 bg-purple-50 text-purple-600 rounded-xl"><IconFactory /></div>
-                                <div>
-                                    <p className="text-sm text-slate-500 font-medium">平均利润率</p>
-                                    <p className="text-2xl font-bold text-slate-800">{avgMargin.toFixed(2)}%</p>
-                                </div>
+                                <div><p className="text-sm text-slate-500 font-medium">平均利润率</p><p className="text-2xl font-bold text-slate-800">{avgMargin.toFixed(2)}%</p></div>
                             </div>
                         </div>
 
-                        {/* --- 新增：PO 发货进度追踪看板 --- */}
                         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                             <div className="p-5 border-b border-slate-100 flex items-center space-x-2 bg-slate-50">
-                                <span className="text-indigo-500"><IconCart /></span>
-                                <h3 className="text-lg font-bold text-slate-800">PO 发货进度追踪</h3>
+                                <span className="text-indigo-500"><IconCart /></span><h3 className="text-lg font-bold text-slate-800">PO 发货进度追踪</h3>
                             </div>
                             <div className="overflow-x-auto">
                                 <table className="w-full text-left border-collapse min-w-[700px]">
-                                    <thead>
-                                        <tr className="bg-white text-slate-500 text-sm border-b border-slate-200">
-                                            <th className="p-4 font-medium">PO 号码</th>
-                                            <th className="p-4 font-medium">订单总额 ($)</th>
-                                            <th className="p-4 font-medium">已发货金额 ($)</th>
-                                            <th className="p-4 font-medium">待发货金额 ($)</th>
-                                            <th className="p-4 font-medium">状态</th>
-                                        </tr>
+                                    <thead className="bg-white text-slate-500 text-sm border-b border-slate-200">
+                                        <tr><th className="p-4 font-medium">PO 号码</th><th className="p-4 font-medium">订单总额 ($)</th><th className="p-4 font-medium">已发货金额 ($)</th><th className="p-4 font-medium">待发货金额 ($)</th><th className="p-4 font-medium">状态 / 操作</th></tr>
                                     </thead>
                                     <tbody>
-                                        {poProgress.length === 0 && (
-                                            <tr><td colSpan="5" className="p-8 text-center text-slate-400">暂无客户订单数据</td></tr>
-                                        )}
+                                        {poProgress.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-400">暂无客户订单数据</td></tr>}
                                         {poProgress.map(progress => (
-                                            <tr key={progress.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                                            <tr key={progress.id} className="border-b border-slate-100 hover:bg-slate-50">
                                                 <td className="p-4 font-bold text-indigo-600">{progress.poNo}</td>
                                                 <td className="p-4 font-semibold text-slate-800">{progress.totalAmount.toFixed(2)}</td>
                                                 <td className="p-4 font-semibold text-emerald-600">{progress.shippedAmount.toFixed(2)}</td>
                                                 <td className="p-4 font-semibold text-orange-500">{progress.pendingAmount.toFixed(2)}</td>
-                                                <td className="p-4">
-                                                    {progress.status === '已发完' ? (
-                                                        <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-700">已发完</span>
-                                                    ) : progress.status === '部分发货' ? (
-                                                        <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-blue-100 text-blue-700">部分发货</span>
-                                                    ) : (
-                                                        <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-slate-100 text-slate-600">未发货</span>
-                                                    )}
+                                                <td className="p-4 flex items-center gap-2">
+                                                    {progress.isCompleted ? <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-slate-200 text-slate-600">已结单</span> : 
+                                                     progress.status === '已发完' ? <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-700">已发完</span> : 
+                                                     progress.status === '部分发货' ? <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-blue-100 text-blue-700">部分发货</span> : 
+                                                     <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-slate-100 text-slate-600">未发货</span>}
+                                                    <button onClick={() => togglePoCompleted(progress.id)} className={`text-xs px-2 py-1 rounded border transition-colors ${progress.isCompleted ? 'border-slate-300 text-slate-500 hover:bg-slate-200' : 'border-indigo-300 text-indigo-600 hover:bg-indigo-50'}`}>
+                                                        {progress.isCompleted ? '撤销' : '手动结单'}
+                                                    </button>
                                                 </td>
                                             </tr>
                                         ))}
@@ -298,47 +301,31 @@
 
                         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                             <div className="p-5 border-b border-slate-100 flex items-center space-x-2 bg-slate-50">
-                                <span className="text-orange-500"><IconClock /></span>
-                                <h3 className="text-lg font-bold text-slate-800">收款到期日历</h3>
+                                <span className="text-orange-500"><IconClock /></span><h3 className="text-lg font-bold text-slate-800">收款到期日历</h3>
                             </div>
                             <div className="overflow-x-auto">
                                 <table className="w-full text-left border-collapse min-w-[700px]">
-                                    <thead>
-                                        <tr className="bg-white text-slate-500 text-sm border-b border-slate-200">
-                                            <th className="p-4 font-medium">CI 号码</th>
-                                            <th className="p-4 font-medium">发货明细 (包含数量)</th>
-                                            <th className="p-4 font-medium">总金额 ($)</th>
-                                            <th className="p-4 font-medium">账期 / 到期日</th>
-                                            <th className="p-4 font-medium">状态</th>
-                                        </tr>
+                                    <thead className="bg-white text-slate-500 text-sm border-b border-slate-200">
+                                        <tr><th className="p-4 font-medium">CI 号码 / PO关联</th><th className="p-4 font-medium">发货总金额 ($)</th><th className="p-4 font-medium">账期 / 到期日</th><th className="p-4 font-medium">收款状态 / 操作</th></tr>
                                     </thead>
                                     <tbody>
-                                        {reminders.length === 0 && (
-                                            <tr><td colSpan="5" className="p-8 text-center text-slate-400">暂无发货记录</td></tr>
-                                        )}
+                                        {reminders.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-400">暂无发货记录</td></tr>}
                                         {reminders.map((ci) => (
-                                            <tr key={ci.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                                                <td className="p-4 font-bold text-indigo-600">{ci.ciNo}</td>
+                                            <tr key={ci.id} className="border-b border-slate-100 hover:bg-slate-50">
                                                 <td className="p-4">
-                                                    {ci.items.map(i => (
-                                                        <div key={i.id} className="text-sm text-slate-700">
-                                                            {i.model} <span className="text-xs text-slate-400">×{i.quantity || 1}</span>
-                                                        </div>
-                                                    ))}
+                                                    <div className="font-bold text-indigo-600">{ci.ciNo}</div>
+                                                    <div className="text-xs text-slate-500 mt-1">关联: {ci.poNo}</div>
                                                 </td>
                                                 <td className="p-4 font-semibold text-slate-800">{ci.totalAmount.toFixed(2)}</td>
-                                                <td className="p-4">
-                                                    <div className="text-sm text-slate-600">{ci.paymentTerms} 天</div>
-                                                    <div className="text-xs font-bold text-slate-500 mt-1">{ci.dueDate?.toLocaleDateString()}</div>
-                                                </td>
-                                                <td className="p-4">
-                                                    {ci.daysLeft < 0 ? (
-                                                        <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-red-100 text-red-700">逾期 {Math.abs(ci.daysLeft)} 天</span>
-                                                    ) : ci.daysLeft <= 7 ? (
-                                                        <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-orange-100 text-orange-700">即将到期 ({ci.daysLeft}天)</span>
-                                                    ) : (
-                                                        <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-700">正常 ({ci.daysLeft}天)</span>
-                                                    )}
+                                                <td className="p-4"><div className="text-sm text-slate-600">{ci.paymentTerms} 天</div><div className="text-xs font-bold text-slate-500 mt-1">{ci.dueDate?.toLocaleDateString()}</div></td>
+                                                <td className="p-4 flex items-center gap-2">
+                                                    {ci.isPaid ? <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-slate-200 text-slate-600">已收款</span> : 
+                                                     ci.daysLeft < 0 ? <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-red-100 text-red-700">逾期 {Math.abs(ci.daysLeft)} 天</span> : 
+                                                     ci.daysLeft <= 7 ? <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-orange-100 text-orange-700">即将到期 ({ci.daysLeft}天)</span> : 
+                                                     <span className="inline-flex px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-700">正常 ({ci.daysLeft}天)</span>}
+                                                    <button onClick={() => toggleCiPaid(ci.id)} className={`text-xs px-2 py-1 rounded border transition-colors ${ci.isPaid ? 'border-slate-300 text-slate-500 hover:bg-slate-200' : 'border-emerald-300 text-emerald-600 hover:bg-emerald-50'}`}>
+                                                        {ci.isPaid ? '撤销' : '标为已收'}
+                                                    </button>
                                                 </td>
                                             </tr>
                                         ))}
@@ -350,110 +337,10 @@
                 );
             };
 
-            // --- 视图: 工厂合同 SC ---
-            const renderSupplierContracts = () => (
-                <div className="space-y-6 fade-in">
-                    <h2 className="text-2xl font-bold text-slate-800">工厂采购合同 (成本基准)</h2>
-                    <form onSubmit={handleAddContract} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                        <div className="flex flex-col md:flex-row gap-4 mb-6 pb-6 border-b border-slate-100">
-                            <div className="flex-1 space-y-1">
-                                <label className="text-sm font-semibold text-slate-600">工厂合同号</label>
-                                <input required type="text" value={newContract.contractNo} onChange={e => setNewContract({...newContract, contractNo: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="SC-..." />
-                            </div>
-                            <div className="flex-1 space-y-1">
-                                <label className="text-sm font-semibold text-slate-600">签订日期</label>
-                                <input required type="date" value={newContract.date} onChange={e => setNewContract({...newContract, date: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                            </div>
-                        </div>
-
-                        <div className="space-y-3">
-                            <label className="text-sm font-semibold text-slate-600">采购产品明细</label>
-                            {newContract.items.map((item) => {
-                                const itemTotal = (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)).toFixed(2);
-                                return (
-                                <div key={item.id} className="flex flex-col md:flex-row gap-3 items-start md:items-center bg-slate-50/50 p-3 rounded-lg border border-slate-100">
-                                    <input required type="text" placeholder="产品型号" value={item.model} onChange={e => handleItemChange(setNewContract, newContract, item.id, 'model', e.target.value)} className="w-full md:w-[25%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <input type="text" placeholder="描述 / 备注" value={item.description} onChange={e => handleItemChange(setNewContract, newContract, item.id, 'description', e.target.value)} className="w-full md:w-[25%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <input required type="number" min="1" placeholder="数量" value={item.quantity} onChange={e => handleItemChange(setNewContract, newContract, item.id, 'quantity', e.target.value)} className="w-full md:w-[15%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <input required type="number" step="0.01" placeholder="单价(成本)" value={item.price} onChange={e => handleItemChange(setNewContract, newContract, item.id, 'price', e.target.value)} className="w-full md:w-[15%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <div className="w-full md:w-[15%] text-slate-600 text-sm font-bold pl-2">
-                                        小计: ${itemTotal}
-                                    </div>
-                                    <div className="w-full md:w-[5%] flex justify-end">
-                                        {newContract.items.length > 1 && (
-                                            <button type="button" onClick={() => handleRemoveItem(setNewContract, newContract, item.id)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg">
-                                                <IconTrash />
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            )})}
-                        </div>
-
-                        <div className="flex flex-col md:flex-row justify-between items-center mt-6 gap-4">
-                            <button type="button" onClick={() => handleAddItem(setNewContract, newContract, { id: generateId(), model: '', description: '', quantity: 1, price: '' })} className="text-indigo-600 font-bold text-sm flex items-center px-4 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg w-full md:w-auto justify-center">
-                                <span className="mr-1"><IconPlus /></span> 添加产品
-                            </button>
-                            <button type="submit" className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto">
-                                保存工厂合同
-                            </button>
-                        </div>
-                    </form>
-
-                    {/* SC 列表 */}
-                    <div className="space-y-4">
-                        {supplierContracts.map((contract) => {
-                            const contractTotal = contract.items.reduce((sum, item) => sum + (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)), 0);
-                            return (
-                            <div key={contract.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                                <div className="bg-slate-100 p-3 px-5 flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 gap-2">
-                                    <div className="font-bold text-slate-800">
-                                        <span className="text-indigo-600 mr-4">合同: {contract.contractNo}</span>
-                                        <span className="text-sm font-normal text-slate-500">日期: {contract.date}</span>
-                                    </div>
-                                    <div className="flex items-center gap-4">
-                                        <span className="font-bold text-slate-700 bg-white px-3 py-1 rounded-md border border-slate-200">总计: ${contractTotal.toFixed(2)}</span>
-                                        <button onClick={() => setSupplierContracts(supplierContracts.filter(c => c.id !== contract.id))} className="text-sm text-red-500 hover:text-red-700 font-bold px-2 py-1">删除该单</button>
-                                    </div>
-                                </div>
-                                <div className="p-0 overflow-x-auto">
-                                    <table className="w-full text-left text-sm min-w-[600px]">
-                                        <thead className="bg-slate-50 text-slate-500 border-b border-slate-100">
-                                            <tr>
-                                                <th className="p-3 px-5 font-medium">型号 / 描述</th>
-                                                <th className="p-3 px-5 font-medium">数量</th>
-                                                <th className="p-3 px-5 font-medium">采购单价</th>
-                                                <th className="p-3 px-5 font-medium">该项总额</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {contract.items.map(item => {
-                                                const qty = parseFloat(item.quantity || 1);
-                                                const price = parseFloat(item.price || 0);
-                                                return (
-                                                <tr key={item.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                                                    <td className="p-3 px-5">
-                                                        <div className="font-bold text-slate-800">{item.model}</div>
-                                                        <div className="text-xs text-slate-500">{item.description}</div>
-                                                    </td>
-                                                    <td className="p-3 px-5 font-medium text-slate-700">{qty}</td>
-                                                    <td className="p-3 px-5 text-slate-600">${price.toFixed(2)}</td>
-                                                    <td className="p-3 px-5 font-bold text-slate-800">${(price * qty).toFixed(2)}</td>
-                                                </tr>
-                                            )})}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        )})}
-                    </div>
-                </div>
-            );
-
-            // --- 视图: 客户订单 PO ---
+            // --- 视图: 客户订单 PO (第 1 步) ---
             const renderCustomerPOs = () => (
                 <div className="space-y-6 fade-in">
-                    <h2 className="text-2xl font-bold text-slate-800">客户订单 (PO)</h2>
+                    <h2 className="text-2xl font-bold text-slate-800">1. 客户订单 (PO) - <span className="text-indigo-600 text-lg">所有数据源头</span></h2>
                     <form onSubmit={handleAddPO} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                         <div className="flex flex-col md:flex-row gap-4 mb-6 pb-6 border-b border-slate-100">
                             <div className="flex-1 space-y-1">
@@ -467,103 +354,66 @@
                         </div>
 
                         <div className="space-y-3">
-                            <label className="text-sm font-semibold text-slate-600">销售产品明细 (关联成本以计算利润)</label>
+                            <label className="text-sm font-semibold text-slate-600">销售产品明细 (定义该订单的所有产品)</label>
                             {newPO.items.map((item) => {
                                 const itemTotal = (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)).toFixed(2);
                                 return (
                                 <div key={item.id} className="flex flex-col lg:flex-row gap-3 items-start lg:items-center bg-slate-50/50 p-3 rounded-lg border border-slate-100">
-                                    <select required value={item.supplierItemId} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'supplierItemId', e.target.value)} className="w-full lg:w-[25%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
-                                        <option value="">绑定成本单品...</option>
-                                        {supplierContracts.map(c => c.items.map(i => (
-                                            <option key={i.id} value={i.id}>[{c.contractNo}] {i.model}</option>
-                                        )))}
-                                    </select>
-                                    <input required type="text" placeholder="销售型号/备注" value={item.model} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'model', e.target.value)} className="w-full lg:w-[20%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                                    <input required type="text" placeholder="产品型号" value={item.model} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'model', e.target.value)} className="w-full lg:w-[30%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                                    <input type="text" placeholder="备注描述" value={item.description} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'description', e.target.value)} className="w-full lg:w-[25%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
                                     <input required type="number" min="1" placeholder="数量" value={item.quantity} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'quantity', e.target.value)} className="w-full lg:w-[15%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <input required type="number" step="0.01" placeholder="售价/单件" value={item.price} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'price', e.target.value)} className="w-full lg:w-[15%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <div className="w-full lg:w-[15%] text-slate-600 text-sm font-bold pl-2">
-                                        小计: ${itemTotal}
-                                    </div>
+                                    <input required type="number" step="0.01" placeholder="客户单价($)" value={item.price} onChange={e => handleItemChange(setNewPO, newPO, item.id, 'price', e.target.value)} className="w-full lg:w-[15%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                                    <div className="w-full lg:w-[10%] text-slate-600 text-sm font-bold pl-2">小计: ${itemTotal}</div>
                                     <div className="w-full lg:w-[5%] flex justify-end">
                                         {newPO.items.length > 1 && (
-                                            <button type="button" onClick={() => handleRemoveItem(setNewPO, newPO, item.id)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg">
-                                                <IconTrash />
-                                            </button>
+                                            <button type="button" onClick={() => setNewPO({...newPO, items: newPO.items.filter(i => i.id !== item.id)})} className="p-2 text-red-500 hover:bg-red-100 rounded-lg"><IconTrash /></button>
                                         )}
                                     </div>
                                 </div>
                             )})}
                         </div>
-
                         <div className="flex flex-col md:flex-row justify-between items-center mt-6 gap-4">
-                            <button type="button" onClick={() => handleAddItem(setNewPO, newPO, { id: generateId(), supplierItemId: '', model: '', description: '', quantity: 1, price: '' })} className="text-indigo-600 font-bold text-sm flex items-center px-4 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg w-full md:w-auto justify-center">
-                                <span className="mr-1"><IconPlus /></span> 添加产品
-                            </button>
-                            <button type="submit" className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto">
-                                保存客户订单
-                            </button>
+                            <button type="button" onClick={() => setNewPO({...newPO, items: [...newPO.items, { id: generateId(), model: '', description: '', quantity: 1, price: '' }]})} className="text-indigo-600 font-bold text-sm flex items-center px-4 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg w-full md:w-auto justify-center"><span className="mr-1"><IconPlus /></span> 添加产品</button>
+                            <button type="submit" className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto">保存客户订单</button>
                         </div>
                     </form>
 
                     {/* PO 列表 */}
                     <div className="space-y-4">
                         {customerPOs.map((po) => {
-                            let poTotal = 0;
-                            let poProfitTotal = 0;
+                            let poTotal = 0; let poProfitTotal = 0;
                             po.items.forEach(item => {
-                                const qty = parseFloat(item.quantity || 1);
-                                poTotal += parseFloat(item.price || 0) * qty;
-                                poProfitTotal += calculateProfit(item.price, qty, item.supplierItemId).totalProfit;
+                                const qty = parseFloat(item.quantity || 1); const price = parseFloat(item.price || 0); const cost = getPoCost(po.id, item.id);
+                                poTotal += price * qty; poProfitTotal += (price - cost) * qty;
                             });
 
                             return (
                             <div key={po.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                                 <div className="bg-indigo-50 p-3 px-5 flex flex-col md:flex-row justify-between items-start md:items-center border-b border-indigo-100 gap-2">
-                                    <div className="font-bold text-slate-800">
-                                        <span className="text-indigo-700 mr-4">PO: {po.poNo}</span>
-                                        <span className="text-sm font-normal text-slate-600">日期: {po.date}</span>
-                                    </div>
+                                    <div className="font-bold text-slate-800"><span className="text-indigo-700 mr-4">PO: {po.poNo}</span><span className="text-sm font-normal text-slate-600">日期: {po.date}</span></div>
                                     <div className="flex items-center gap-4 text-sm">
                                         <span className="font-bold text-slate-700 bg-white px-3 py-1 rounded-md border border-slate-200">订单总额: ${poTotal.toFixed(2)}</span>
                                         <span className="font-bold text-emerald-600 bg-white px-3 py-1 rounded-md border border-slate-200">预估总利: ${poProfitTotal.toFixed(2)}</span>
+                                        <span className="font-bold text-blue-600 bg-white px-3 py-1 rounded-md border border-slate-200">利润率: {(poTotal > 0 ? (poProfitTotal / poTotal) * 100 : 0).toFixed(1)}%</span>
                                         <button onClick={() => setCustomerPOs(customerPOs.filter(c => c.id !== po.id))} className="text-sm text-red-500 hover:text-red-700 font-bold px-2 py-1">删除该单</button>
                                     </div>
                                 </div>
                                 <div className="p-0 overflow-x-auto">
                                     <table className="w-full text-left text-sm min-w-[800px]">
                                         <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
-                                            <tr>
-                                                <th className="p-3 px-5 font-medium">型号 / 备注</th>
-                                                <th className="p-3 px-5 font-medium">数量</th>
-                                                <th className="p-3 px-5 font-medium">单价 / 成本</th>
-                                                <th className="p-3 px-5 font-medium">该项总额 / 总利</th>
-                                                <th className="p-3 px-5 font-medium">利润率</th>
-                                            </tr>
+                                            <tr><th className="p-3 px-5 font-medium">产品型号 / 备注</th><th className="p-3 px-5 font-medium">数量</th><th className="p-3 px-5 font-medium">单价(售) / 成本(底)</th><th className="p-3 px-5 font-medium">该项总额 / 总利</th><th className="p-3 px-5 font-medium">利润率</th></tr>
                                         </thead>
                                         <tbody>
                                             {po.items.map(item => {
-                                                const { unitProfit, totalProfit, margin, cost, qty } = calculateProfit(item.price, item.quantity, item.supplierItemId);
-                                                const itemTotal = parseFloat(item.price || 0) * qty;
+                                                const qty = parseFloat(item.quantity || 1); const price = parseFloat(item.price || 0); const cost = getPoCost(po.id, item.id);
+                                                const margin = price > 0 ? ((price - cost) / price) * 100 : 0;
                                                 return (
                                                     <tr key={item.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                                                        <td className="p-3 px-5">
-                                                            <div className="font-bold text-slate-800">{item.model}</div>
-                                                            <div className="text-xs text-slate-400">{item.description}</div>
-                                                        </td>
+                                                        <td className="p-3 px-5"><div className="font-bold text-slate-800">{item.model}</div><div className="text-xs text-slate-400">{item.description}</div></td>
                                                         <td className="p-3 px-5 font-medium text-slate-700">{qty}</td>
-                                                        <td className="p-3 px-5">
-                                                            <div className="font-bold text-emerald-600">${parseFloat(item.price).toFixed(2)} <span className="text-xs text-slate-400 font-normal">售</span></div>
-                                                            <div className="text-xs text-slate-500 font-medium">${cost.toFixed(2)} <span className="text-xs text-slate-400 font-normal">本</span></div>
-                                                        </td>
-                                                        <td className="p-3 px-5">
-                                                            <div className="font-bold text-slate-800">${itemTotal.toFixed(2)} <span className="text-xs text-slate-400 font-normal">总额</span></div>
-                                                            <div className="text-sm text-emerald-600 font-bold">${totalProfit.toFixed(2)} <span className="text-xs text-slate-400 font-normal">总利</span></div>
-                                                        </td>
-                                                        <td className="p-3 px-5">
-                                                            <span className={`px-2 py-1 rounded-md text-xs font-bold border ${margin >= 30 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : margin >= 15 ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>
-                                                                {margin.toFixed(1)}%
-                                                            </span>
-                                                        </td>
+                                                        <td className="p-3 px-5"><div className="font-bold text-emerald-600">${price.toFixed(2)} <span className="text-xs text-slate-400 font-normal">售</span></div><div className="text-xs text-slate-500 font-medium">${cost.toFixed(2)} <span className="text-xs text-slate-400 font-normal">本</span></div></td>
+                                                        <td className="p-3 px-5"><div className="font-bold text-slate-800">${(price * qty).toFixed(2)} <span className="text-xs text-slate-400 font-normal">总</span></div><div className="text-sm text-emerald-600 font-bold">${((price - cost) * qty).toFixed(2)} <span className="text-xs text-slate-400 font-normal">利</span></div></td>
+                                                        <td className="p-3 px-5"><span className={`px-2 py-1 rounded-md text-xs font-bold border ${margin >= 30 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : margin >= 15 ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>{margin.toFixed(1)}%</span></td>
                                                     </tr>
                                                 );
                                             })}
@@ -576,79 +426,185 @@
                 </div>
             );
 
-            // --- 视图: 发货出单 CI ---
-            const renderShippingCIs = () => (
+            // --- 视图: 工厂合同 SC (第 2 步) ---
+            const renderSupplierContracts = () => (
                 <div className="space-y-6 fade-in">
-                    <h2 className="text-2xl font-bold text-slate-800">发货出单 (CI)</h2>
-                    <form onSubmit={handleAddCI} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 pb-6 border-b border-slate-100">
-                            <div className="space-y-1">
-                                <label className="text-sm font-semibold text-slate-600">关联客户订单 (PO)</label>
-                                <select required value={newCI.poId} onChange={e => setNewCI({...newCI, poId: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
-                                    <option value="">选择对应 PO...</option>
-                                    {customerPOs.map(po => <option key={po.id} value={po.id}>{po.poNo}</option>)}
-                                </select>
+                    <h2 className="text-2xl font-bold text-slate-800">2. SC 工厂合同 - <span className="text-purple-600 text-lg">基于 PO 只需填入采购成本</span></h2>
+                    
+                    {customerPOs.length === 0 ? (
+                        <div className="bg-yellow-50 text-yellow-700 p-6 rounded-2xl border border-yellow-200 text-center font-bold">请先在“PO 客户订单”模块录入订单数据</div>
+                    ) : (
+                        <form onSubmit={handleAddContract} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div className="flex flex-col md:flex-row gap-4 mb-6 pb-6 border-b border-slate-100">
+                                <div className="flex-1 space-y-1">
+                                    <label className="text-sm font-semibold text-slate-600">选择客户订单 (PO)</label>
+                                    <select required value={newContract.poId} onChange={e => handlePoChangeForSC(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
+                                        <option value="">-- 请选择要录入成本的 PO --</option>
+                                        {customerPOs.map(po => <option key={po.id} value={po.id}>{po.poNo} ({po.date})</option>)}
+                                    </select>
+                                </div>
+                                <div className="flex-1 space-y-1">
+                                    <label className="text-sm font-semibold text-slate-600">工厂合同号 (选填)</label>
+                                    <input type="text" value={newContract.contractNo} onChange={e => setNewContract({...newContract, contractNo: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="SC-..." />
+                                </div>
+                                <div className="flex-1 space-y-1">
+                                    <label className="text-sm font-semibold text-slate-600">签订日期</label>
+                                    <input required type="date" value={newContract.date} onChange={e => setNewContract({...newContract, date: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                                </div>
                             </div>
-                            <div className="space-y-1">
-                                <label className="text-sm font-semibold text-slate-600">CI 商业发票号</label>
-                                <input required type="text" value={newCI.ciNo} onChange={e => setNewCI({...newCI, ciNo: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="CI-..." />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-sm font-semibold text-slate-600">发货日期</label>
-                                <input required type="date" value={newCI.date} onChange={e => setNewCI({...newCI, date: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-sm font-semibold text-slate-600">账期 (天数)</label>
-                                <input required type="number" min="0" value={newCI.paymentTerms} onChange={e => setNewCI({...newCI, paymentTerms: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="如: 30" />
-                            </div>
-                        </div>
 
-                        <div className="space-y-3">
-                            <label className="text-sm font-semibold text-slate-600">发货明细项目</label>
-                            {newCI.items.map((item) => {
-                                const itemTotal = (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)).toFixed(2);
-                                return (
-                                <div key={item.id} className="flex flex-col md:flex-row gap-3 items-start md:items-center bg-slate-50/50 p-3 rounded-lg border border-slate-100">
-                                    <input required type="text" placeholder="发货产品 / 费用项" value={item.model} onChange={e => handleItemChange(setNewCI, newCI, item.id, 'model', e.target.value)} className="w-full md:w-[25%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <input type="text" placeholder="描述 / 备注" value={item.description} onChange={e => handleItemChange(setNewCI, newCI, item.id, 'description', e.target.value)} className="w-full md:w-[25%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <input required type="number" min="1" placeholder="数量" value={item.quantity} onChange={e => handleItemChange(setNewCI, newCI, item.id, 'quantity', e.target.value)} className="w-full md:w-[15%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <input required type="number" step="0.01" placeholder="单价 ($)" value={item.price} onChange={e => handleItemChange(setNewCI, newCI, item.id, 'price', e.target.value)} className="w-full md:w-[15%] p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                    <div className="w-full md:w-[15%] text-slate-600 text-sm font-bold pl-2">
-                                        小计: ${itemTotal}
+                            {newContract.poId && (
+                                <div className="space-y-3">
+                                    <label className="text-sm font-semibold text-slate-600 block mb-2">为该 PO 下的产品录入采购单价(成本)：</label>
+                                    {newContract.items.map((item) => {
+                                        const poItem = getPoItem(newContract.poId, item.poItemId);
+                                        return (
+                                        <div key={item.poItemId} className="flex flex-col md:flex-row gap-4 items-center bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                            <div className="w-full md:w-2/3 flex justify-between items-center pr-4 border-r border-slate-200">
+                                                <div>
+                                                    <div className="font-bold text-slate-800">{poItem.model}</div>
+                                                    <div className="text-xs text-slate-500">{poItem.description}</div>
+                                                </div>
+                                                <div className="text-sm text-slate-500 font-medium">数量: <span className="text-slate-800 font-bold">{poItem.quantity}</span></div>
+                                            </div>
+                                            <div className="w-full md:w-1/3">
+                                                <input required type="number" step="0.01" placeholder="填入采购单价 (成本)" value={item.cost} onChange={e => handleItemChange(setNewContract, newContract, item.poItemId, 'cost', e.target.value)} className="w-full p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none" />
+                                            </div>
+                                        </div>
+                                    )})}
+                                </div>
+                            )}
+
+                            <div className="flex justify-end mt-6">
+                                <button type="submit" disabled={!newContract.poId} className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto disabled:opacity-50">保存采购成本</button>
+                            </div>
+                        </form>
+                    )}
+
+                    {/* SC 列表 */}
+                    <div className="space-y-4">
+                        {supplierContracts.map((contract) => {
+                            const po = customerPOs.find(p => p.id === contract.poId);
+                            const contractTotal = contract.items.reduce((sum, item) => sum + (parseFloat(item.cost || 0) * parseFloat(getPoItem(contract.poId, item.poItemId).quantity || 1)), 0);
+                            return (
+                            <div key={contract.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                <div className="bg-slate-100 p-3 px-5 flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 gap-2">
+                                    <div className="font-bold text-slate-800">
+                                        <span className="text-purple-700 mr-4">合同: {contract.contractNo || '未编号'}</span>
+                                        <span className="text-indigo-600 text-sm bg-indigo-100 px-2 py-0.5 rounded mr-4">归属PO: {po?.poNo || 'PO已删'}</span>
+                                        <span className="text-sm font-normal text-slate-500">日期: {contract.date}</span>
                                     </div>
-                                    <div className="w-full md:w-[5%] flex justify-end">
-                                        {newCI.items.length > 1 && (
-                                            <button type="button" onClick={() => handleRemoveItem(setNewCI, newCI, item.id)} className="p-2 text-red-500 hover:bg-red-100 rounded-lg">
-                                                <IconTrash />
-                                            </button>
-                                        )}
+                                    <div className="flex items-center gap-4">
+                                        <span className="font-bold text-slate-700 bg-white px-3 py-1 rounded-md border border-slate-200">采购总额: ${contractTotal.toFixed(2)}</span>
+                                        <button onClick={() => setSupplierContracts(supplierContracts.filter(c => c.id !== contract.id))} className="text-sm text-red-500 hover:text-red-700 font-bold px-2 py-1">删除记录</button>
                                     </div>
                                 </div>
-                            )})}
-                        </div>
+                                <div className="p-0 overflow-x-auto">
+                                    <table className="w-full text-left text-sm min-w-[600px]">
+                                        <thead className="bg-slate-50 text-slate-500 border-b border-slate-100">
+                                            <tr><th className="p-3 px-5 font-medium">产品型号</th><th className="p-3 px-5 font-medium">数量 (来自PO)</th><th className="p-3 px-5 font-medium">采购单价</th><th className="p-3 px-5 font-medium">采购小计</th><th className="p-3 px-5 font-medium">利润率</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            {contract.items.map(item => {
+                                                const poItem = getPoItem(contract.poId, item.poItemId);
+                                                const qty = parseFloat(poItem.quantity || 1);
+                                                const cost = parseFloat(item.cost || 0);
+                                                const price = parseFloat(poItem.price || 0);
+                                                const margin = price > 0 ? ((price - cost) / price) * 100 : 0;
+                                                return (
+                                                <tr key={item.poItemId} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                                                    <td className="p-3 px-5 font-bold text-slate-800">{poItem.model || '已删产品'}</td>
+                                                    <td className="p-3 px-5 font-medium text-slate-700">{qty}</td>
+                                                    <td className="p-3 px-5 text-slate-600">${cost.toFixed(2)}</td>
+                                                    <td className="p-3 px-5 font-bold text-slate-800">${(cost * qty).toFixed(2)}</td>
+                                                    <td className="p-3 px-5"><span className={`px-2 py-1 rounded-md text-xs font-bold border ${margin >= 30 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : margin >= 15 ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>{margin.toFixed(1)}%</span></td>
+                                                </tr>
+                                            )})}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )})}
+                    </div>
+                </div>
+            );
 
-                        <div className="flex flex-col md:flex-row justify-between items-center mt-6 gap-4">
-                            <button type="button" onClick={() => handleAddItem(setNewCI, newCI, { id: generateId(), model: '', description: '', quantity: 1, price: '' })} className="text-indigo-600 font-bold text-sm flex items-center px-4 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg w-full md:w-auto justify-center">
-                                <span className="mr-1"><IconPlus /></span> 添加明细项
-                            </button>
-                            <button type="submit" className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto">
-                                保存发货单
-                            </button>
-                        </div>
-                    </form>
+            // --- 视图: 发货出单 CI (第 3 步) ---
+            const renderShippingCIs = () => (
+                <div className="space-y-6 fade-in">
+                    <h2 className="text-2xl font-bold text-slate-800">3. CI 发货出单 - <span className="text-emerald-600 text-lg">基于 PO 只需修改发货数量</span></h2>
+                    
+                    {customerPOs.length === 0 ? (
+                        <div className="bg-yellow-50 text-yellow-700 p-6 rounded-2xl border border-yellow-200 text-center font-bold">请先在“PO 客户订单”模块录入订单数据</div>
+                    ) : (
+                        <form onSubmit={handleAddCI} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 pb-6 border-b border-slate-100">
+                                <div className="space-y-1">
+                                    <label className="text-sm font-semibold text-slate-600">选择客户订单 (PO)</label>
+                                    <select required value={newCI.poId} onChange={e => handlePoChangeForCI(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none">
+                                        <option value="">-- 选择要发货的 PO --</option>
+                                        {customerPOs.map(po => <option key={po.id} value={po.id}>{po.poNo}</option>)}
+                                    </select>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-sm font-semibold text-slate-600">CI 商业发票号</label>
+                                    <input required type="text" value={newCI.ciNo} onChange={e => setNewCI({...newCI, ciNo: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="CI-..." />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-sm font-semibold text-slate-600">发货日期</label>
+                                    <input required type="date" value={newCI.date} onChange={e => setNewCI({...newCI, date: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-sm font-semibold text-slate-600">账期 (天数)</label>
+                                    <input required type="number" min="0" value={newCI.paymentTerms} onChange={e => setNewCI({...newCI, paymentTerms: e.target.value})} className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="如: 30" />
+                                </div>
+                            </div>
+
+                            {newCI.poId && (
+                                <div className="space-y-3">
+                                    <label className="text-sm font-semibold text-slate-600 block mb-2">修改本次发货数量（单价固定为PO售价，发货数为0的将自动忽略）：</label>
+                                    {newCI.items.map((item) => {
+                                        const poItem = getPoItem(newCI.poId, item.poItemId);
+                                        const price = parseFloat(poItem.price || 0);
+                                        const itemTotal = (price * parseFloat(item.shipQty || 0)).toFixed(2);
+                                        return (
+                                        <div key={item.poItemId} className="flex flex-col md:flex-row gap-4 items-center bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                            <div className="w-full md:w-1/2 flex justify-between items-center pr-4 border-r border-slate-200">
+                                                <div>
+                                                    <div className="font-bold text-slate-800">{poItem.model}</div>
+                                                    <div className="text-xs text-slate-500">{poItem.description}</div>
+                                                </div>
+                                                <div className="text-sm text-slate-500 font-medium">售价: <span className="text-emerald-600 font-bold">${price.toFixed(2)}</span></div>
+                                            </div>
+                                            <div className="w-full md:w-1/4 flex items-center">
+                                                <span className="text-sm font-medium text-slate-500 mr-2 whitespace-nowrap">发货数量:</span>
+                                                <input required type="number" min="0" value={item.shipQty} onChange={e => handleItemChange(setNewCI, newCI, item.poItemId, 'shipQty', e.target.value)} className="w-full p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" />
+                                            </div>
+                                            <div className="w-full md:w-1/4 text-slate-800 text-sm font-bold pl-2 text-right">
+                                                该项发货金额: ${itemTotal}
+                                            </div>
+                                        </div>
+                                    )})}
+                                </div>
+                            )}
+
+                            <div className="flex justify-end mt-6">
+                                <button type="submit" disabled={!newCI.poId} className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto disabled:opacity-50">保存发货单</button>
+                            </div>
+                        </form>
+                    )}
 
                     {/* CI 列表 */}
                     <div className="space-y-4">
                         {shippingCIs.map((ci) => {
-                            const total = ci.items.reduce((sum, item) => sum + (parseFloat(item.price || 0) * parseFloat(item.quantity || 1)), 0);
+                            const po = customerPOs.find(p => p.id === ci.poId);
+                            const total = ci.items.reduce((sum, item) => sum + (parseFloat(getPoItem(ci.poId, item.poItemId).price || 0) * parseFloat(item.shipQty || 0)), 0);
                             return (
                             <div key={ci.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                                 <div className="bg-emerald-50 p-3 px-5 flex flex-col md:flex-row justify-between items-start md:items-center border-b border-emerald-100 gap-2">
                                     <div className="font-bold text-slate-800">
                                         <span className="text-emerald-700 mr-4">CI: {ci.ciNo}</span>
-                                        {customerPOs.find(p => p.id === ci.poId) && (
-                                            <span className="text-indigo-600 mr-4 text-sm bg-indigo-100 px-2 py-0.5 rounded">关联: {customerPOs.find(p => p.id === ci.poId).poNo}</span>
-                                        )}
+                                        <span className="text-indigo-600 text-sm bg-indigo-100 px-2 py-0.5 rounded mr-4">归属PO: {po?.poNo || 'PO已删'}</span>
                                         <span className="text-sm font-normal text-slate-600 mr-4">发货日: {ci.date}</span>
                                         <span className="text-sm font-normal text-slate-600">账期: {ci.paymentTerms} 天</span>
                                     </div>
@@ -660,23 +616,16 @@
                                 <div className="p-0 overflow-x-auto">
                                     <table className="w-full text-left text-sm min-w-[600px]">
                                         <thead className="bg-slate-50 text-slate-500 border-b border-slate-100">
-                                            <tr>
-                                                <th className="p-3 px-5 font-medium">发货产品 / 费用项</th>
-                                                <th className="p-3 px-5 font-medium">数量</th>
-                                                <th className="p-3 px-5 font-medium">单价</th>
-                                                <th className="p-3 px-5 font-medium">该项金额</th>
-                                            </tr>
+                                            <tr><th className="p-3 px-5 font-medium">产品型号</th><th className="p-3 px-5 font-medium">发货数量</th><th className="p-3 px-5 font-medium">固定单价 (来自PO)</th><th className="p-3 px-5 font-medium">该项金额</th></tr>
                                         </thead>
                                         <tbody>
                                             {ci.items.map(item => {
-                                                const qty = parseFloat(item.quantity || 1);
-                                                const price = parseFloat(item.price || 0);
+                                                const poItem = getPoItem(ci.poId, item.poItemId);
+                                                const qty = parseFloat(item.shipQty || 0);
+                                                const price = parseFloat(poItem.price || 0);
                                                 return (
-                                                <tr key={item.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                                                    <td className="p-3 px-5">
-                                                        <div className="font-bold text-slate-800">{item.model}</div>
-                                                        <div className="text-xs text-slate-500">{item.description}</div>
-                                                    </td>
+                                                <tr key={item.poItemId} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                                                    <td className="p-3 px-5 font-bold text-slate-800">{poItem.model || '已删产品'}</td>
                                                     <td className="p-3 px-5 font-medium text-slate-700">{qty}</td>
                                                     <td className="p-3 px-5 text-slate-600">${price.toFixed(2)}</td>
                                                     <td className="p-3 px-5 font-bold text-slate-800">${(price * qty).toFixed(2)}</td>
@@ -703,42 +652,31 @@
 
             return (
                 <div className="min-h-screen flex flex-col md:flex-row">
-                    {/* 侧边栏 */}
                     <div className="w-full md:w-64 bg-white border-r border-slate-200 shadow-sm flex-shrink-0 z-10 flex flex-col">
                         <div className="p-6 border-b border-slate-100">
-                            <h1 className="text-xl font-black text-indigo-700 flex items-center tracking-tight">
-                                <span className="bg-indigo-100 p-2 rounded-xl mr-2"><IconTrend /></span>
-                                订单管家 PRO
-                            </h1>
+                            <h1 className="text-xl font-black text-indigo-700 flex items-center tracking-tight"><span className="bg-indigo-100 p-2 rounded-xl mr-2"><IconTrend /></span>订单管家 PRO</h1>
                         </div>
                         <nav className="p-4 space-y-2 flex-1">
                             <NavItem id="dashboard" icon={IconDashboard} label="概览与提醒" />
-                            <NavItem id="supplier_contracts" icon={IconFactory} label="SC 工厂合同" />
-                            <NavItem id="customer_pos" icon={IconCart} label="PO 客户订单" />
-                            <NavItem id="shipping_cis" icon={IconFile} label="CI 发货出单" />
+                            <NavItem id="customer_pos" icon={IconCart} label="1. PO 客户订单" />
+                            <NavItem id="supplier_contracts" icon={IconFactory} label="2. SC 工厂合同" />
+                            <NavItem id="shipping_cis" icon={IconFile} label="3. CI 发货出单" />
                         </nav>
                         
-                        {/* 数据备份区域 */}
                         <div className="p-4 border-t border-slate-100 bg-slate-50">
                             <p className="text-xs text-slate-400 mb-3 font-semibold text-center">数据保存在浏览器中，建议定期备份</p>
                             <div className="flex gap-2">
-                                <button onClick={handleExport} className="flex-1 flex items-center justify-center p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors">
-                                    <span className="mr-1"><IconDownload /></span> 导出备份
-                                </button>
-                                <label className="flex-1 flex items-center justify-center p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer">
-                                    <span className="mr-1"><IconUpload /></span> 恢复数据
-                                    <input type="file" accept=".json" className="hidden" onChange={handleImport} />
-                                </label>
+                                <button onClick={handleExport} className="flex-1 flex items-center justify-center p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors"><span className="mr-1"><IconDownload /></span> 导出备份</button>
+                                <label className="flex-1 flex items-center justify-center p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"><span className="mr-1"><IconUpload /></span> 恢复数据<input type="file" accept=".json" className="hidden" onChange={handleImport} /></label>
                             </div>
                         </div>
                     </div>
 
-                    {/* 主内容区 */}
                     <div className="flex-1 p-4 md:p-8 overflow-y-auto">
                         <div className="max-w-5xl mx-auto pb-20">
                             {activeTab === 'dashboard' && renderDashboard()}
-                            {activeTab === 'supplier_contracts' && renderSupplierContracts()}
                             {activeTab === 'customer_pos' && renderCustomerPOs()}
+                            {activeTab === 'supplier_contracts' && renderSupplierContracts()}
                             {activeTab === 'shipping_cis' && renderShippingCIs()}
                         </div>
                     </div>
@@ -746,7 +684,6 @@
             );
         }
 
-        // --- 渲染到 DOM ---
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
