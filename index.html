@@ -73,6 +73,9 @@
             const [supplierContracts, setSupplierContracts] = useLocalStorage('app_contracts_v3', []);
             const [shippingCIs, setShippingCIs] = useLocalStorage('app_cis_v3', []);
 
+            // --- 编辑状态 ---
+            const [editingPoId, setEditingPoId] = useState(null);
+
             // --- 录入表单状态 ---
             // PO 是核心，只录入一次产品型号、描述、售价
             const [newPO, setNewPO] = useState({ poNo: '', customerName: '', date: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
@@ -153,12 +156,31 @@
                 setter({ ...stateObj, items: stateObj.items.map(item => (item.id === itemId || item.poItemId === itemId) ? { ...item, [field]: value } : item) });
             };
 
-            // --- 提交处理 ---
+            // --- 提交与编辑处理 ---
             const handleAddPO = (e) => {
                 e.preventDefault();
-                setCustomerPOs([{ ...newPO, id: generateId() }, ...customerPOs]);
+                if (editingPoId) {
+                    // 更新现有订单
+                    setCustomerPOs(customerPOs.map(po => po.id === editingPoId ? { ...newPO, id: editingPoId } : po));
+                    setEditingPoId(null);
+                    alert("客户订单修改成功！");
+                } else {
+                    // 添加新订单
+                    setCustomerPOs([{ ...newPO, id: generateId() }, ...customerPOs]);
+                    alert("客户订单保存成功！请前往SC或CI模块继续操作。");
+                }
                 setNewPO({ poNo: '', customerName: '', date: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
-                alert("客户订单保存成功！请前往SC或CI模块继续操作。");
+            };
+
+            const startEditPO = (po) => {
+                setEditingPoId(po.id);
+                setNewPO(JSON.parse(JSON.stringify(po))); // 深拷贝，防止直接修改原数据
+                window.scrollTo({ top: 0, behavior: 'smooth' }); // 滚动到顶部表单
+            };
+
+            const cancelEditPO = () => {
+                setEditingPoId(null);
+                setNewPO({ poNo: '', customerName: '', date: '', items: [{ id: generateId(), model: '', description: '', quantity: 1, price: '' }] });
             };
 
             const handleAddContract = (e) => {
@@ -386,8 +408,10 @@
             // --- 视图: 客户订单 PO (第 1 步) ---
             const renderCustomerPOs = () => (
                 <div className="space-y-6 fade-in">
-                    <h2 className="text-2xl font-bold text-slate-800">1. 客户订单 (PO) - <span className="text-indigo-600 text-lg">所有数据源头</span></h2>
-                    <form onSubmit={handleAddPO} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <h2 className="text-2xl font-bold text-slate-800">
+                        1. 客户订单 (PO) - <span className="text-indigo-600 text-lg">{editingPoId ? '正在编辑修改' : '所有数据源头'}</span>
+                    </h2>
+                    <form onSubmit={handleAddPO} className={`bg-white p-6 rounded-2xl shadow-sm border transition-all ${editingPoId ? 'border-indigo-400 ring-4 ring-indigo-50' : 'border-slate-200'}`}>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 pb-6 border-b border-slate-100">
                             <div className="space-y-1">
                                 <label className="text-sm font-semibold text-slate-600">客户 PO 号</label>
@@ -424,7 +448,14 @@
                         </div>
                         <div className="flex flex-col md:flex-row justify-between items-center mt-6 gap-4">
                             <button type="button" onClick={() => setNewPO({...newPO, items: [...newPO.items, { id: generateId(), model: '', description: '', quantity: 1, price: '' }]})} className="text-indigo-600 font-bold text-sm flex items-center px-4 py-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg w-full md:w-auto justify-center"><span className="mr-1"><IconPlus /></span> 添加产品</button>
-                            <button type="submit" className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto">保存客户订单</button>
+                            <div className="flex flex-col md:flex-row gap-3 w-full md:w-auto">
+                                {editingPoId && (
+                                    <button type="button" onClick={cancelEditPO} className="bg-slate-200 text-slate-700 font-bold px-8 py-2.5 rounded-lg hover:bg-slate-300 w-full md:w-auto">取消编辑</button>
+                                )}
+                                <button type="submit" className="bg-slate-800 text-white font-bold px-8 py-2.5 rounded-lg hover:bg-slate-900 w-full md:w-auto">
+                                    {editingPoId ? '保存修改' : '保存客户订单'}
+                                </button>
+                            </div>
                         </div>
                     </form>
 
@@ -445,7 +476,8 @@
                                         <span className="font-bold text-slate-700 bg-white px-3 py-1 rounded-md border border-slate-200">订单总额: ${poTotal.toFixed(2)}</span>
                                         <span className="font-bold text-emerald-600 bg-white px-3 py-1 rounded-md border border-slate-200">预估总利: ${poProfitTotal.toFixed(2)}</span>
                                         <span className="font-bold text-blue-600 bg-white px-3 py-1 rounded-md border border-slate-200">利润率: {(poTotal > 0 ? (poProfitTotal / poTotal) * 100 : 0).toFixed(1)}%</span>
-                                        <button onClick={() => setCustomerPOs(customerPOs.filter(c => c.id !== po.id))} className="text-sm text-red-500 hover:text-red-700 font-bold px-2 py-1">删除该单</button>
+                                        <button type="button" onClick={() => startEditPO(po)} className="text-sm text-indigo-600 hover:text-indigo-800 font-bold px-2 py-1">编辑修改</button>
+                                        <button type="button" onClick={() => setCustomerPOs(customerPOs.filter(c => c.id !== po.id))} className="text-sm text-red-500 hover:text-red-700 font-bold px-2 py-1">删除该单</button>
                                     </div>
                                 </div>
                                 <div className="p-0 overflow-x-auto">
