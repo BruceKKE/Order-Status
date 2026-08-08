@@ -28,6 +28,16 @@ function json(body, status = 200, headers = {}) {
   });
 }
 
+export function withClientNoStore(response) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
 function parseCookies(header) {
   return Object.fromEntries((header || "").split(";").map(part => part.trim()).filter(Boolean).map(part => {
     const index = part.indexOf("=");
@@ -397,15 +407,15 @@ async function dashboardResponse(request, env, ctx) {
   const cache = caches.default;
   const cacheKey = new Request("https://order-status.internal/api/order-status", { method: "GET" });
   const cached = await cache.match(cacheKey);
-  if (cached) return cached;
+  if (cached) return withClientNoStore(cached);
 
   const token = await getTenantToken(env);
   const raw = await readAllTables(env, token);
   const payload = buildDashboard(raw);
   const seconds = Math.max(10, Math.min(300, Number(env.CACHE_SECONDS || 30)));
-  const response = json(payload, 200, { "cache-control": `private, max-age=0, s-maxage=${seconds}` });
-  ctx.waitUntil(cache.put(cacheKey, response.clone()));
-  return response;
+  const cacheable = json(payload, 200, { "cache-control": `public, max-age=${seconds}` });
+  ctx.waitUntil(cache.put(cacheKey, cacheable.clone()));
+  return withClientNoStore(cacheable);
 }
 
 export default {

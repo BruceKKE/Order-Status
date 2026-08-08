@@ -1,0 +1,46 @@
+# 当前交接状态
+
+Last verified: 2026-08-08
+
+## 已运行能力
+
+- 生产地址：<https://order-status-live.goldlikeke.workers.dev>
+- 兼容入口：<https://brucekke.github.io/Order-Status/>，仅做静态跳转
+- 托管：Cloudflare Workers Free + Static Assets
+- 数据源：飞书多维表格，只读
+- 刷新：页面打开立即读取，前端每 60 秒轮询，服务端成功响应最多缓存 60 秒
+- 品牌：`public/wincotek-logo.png`，用于登录页和侧栏
+
+## 认证与数据边界
+
+- 单一共享强密码登录；会话为 12 小时 HMAC 签名 Cookie。
+- Worker Secret 保存飞书应用凭据、Base token、仪表盘密码和会话密钥。
+- 未登录 `/api/order-status` 返回 401。
+- 浏览器 DTO 不含 Feishu record ID、关系 ID、完整明细行或 Secret。
+- 页面没有任何飞书写回入口。
+
+## 维护位置
+
+| 内容 | 文件 |
+| --- | --- |
+| Worker 路由、认证、飞书读取和 DTO | `src/index.js` |
+| 登录页、仪表盘、自动刷新和 Logo 布局 | `public/index.html` |
+| Worker/Static Assets 配置 | `wrangler.jsonc` |
+| 认证与数据转换回归测试 | `tests/` |
+| 运维命令和故障排查 | `docs/RUNBOOK.md` |
+
+## 已知约束
+
+- 共享密码的撤销粒度是整站；更换 `DASHBOARD_PASSWORD` 后重新登录即可，既有 12 小时 Cookie 不会因密码轮换立即失效。
+- 登录失败限速保存在单个 Worker 实例内，属于尽力防护；必须继续使用高熵唯一密码。
+- Workers 免费额度或 CPU 额度耗尽时请求会失败，不会自动升级到付费套餐。
+- 秒级实时并非目标；正常可见延迟约 0–120 秒。
+- 汇总卡默认订单和 CI 金额为 USD；若飞书开始录入非 USD 客户订单或 CI，必须先增加换算或分币种展示，不能直接混合求和。
+
+## 发布验收
+
+1. `npm run check` 全部通过。
+2. `npm run deploy` 返回生产 URL 和新 Version ID。
+3. 未登录订单 API 为 401，伪造 Access 请求头仍为 401。
+4. Logo 静态资源为 200。
+5. 登录后页面显示数据更新时间、客户订单/供应商订单/CI 三组数量，无错误提示。

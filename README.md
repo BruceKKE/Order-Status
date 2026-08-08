@@ -1,10 +1,14 @@
 # Order Status · Feishu Live
 
-只读订单状态页。页面和 API 运行在 Cloudflare Worker，业务数据实时读取飞书多维表格。
+只读订单状态页。页面和 API 运行在 Cloudflare Worker，业务数据以 60 秒轮询和最多 60 秒服务端缓存近实时读取飞书多维表格。
 
 - 线上地址：<https://order-status-live.goldlikeke.workers.dev>
+- 原 GitHub Pages 地址：<https://brucekke.github.io/Order-Status/>（自动跳转到线上地址）
 - [架构与数据口径](docs/ARCHITECTURE.md)
 - [部署与运维手册](docs/RUNBOOK.md)
+- [当前交接状态](docs/HANDOFF.md)
+
+页面打开时立即读取数据，保持打开后每 60 秒自动刷新；手动点击“刷新数据”也会重新请求。登录页和主界面共用本地静态资源 `public/wincotek-logo.png`。
 
 ## 安全边界
 
@@ -32,4 +36,4 @@ npx wrangler secret put SESSION_SECRET
 npm run deploy
 ```
 
-`DASHBOARD_PASSWORD` 至少 12 位，并应使用唯一强密码。Cloudflare Zero Trust Free 激活要求银行卡，因此本项目不依赖 Access，避免产生超额扣费风险。
+`DASHBOARD_PASSWORD` 至少 12 位，并应使用唯一强密码。2026-08-08 此 Cloudflare 账号的 Zero Trust Free 激活流程要求提供付款方式并授权超额费用，因此本项目未启用 Access。

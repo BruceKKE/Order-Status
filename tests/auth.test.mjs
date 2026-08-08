@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import worker from "../src/index.js";
+import worker, { withClientNoStore } from "../src/index.js";
 
 const origin = "https://orders.example.test";
 const env = {
@@ -10,6 +10,11 @@ const env = {
 const ctx = { waitUntil() {} };
 
 const call = (path, init = {}, customEnv = env) => worker.fetch(new Request(`${origin}${path}`, init), customEnv, ctx);
+
+const cacheable = new Response("cached-payload", { headers: { "cache-control": "public, max-age=60" } });
+const clientResponse = withClientNoStore(cacheable);
+assert.equal(clientResponse.headers.get("cache-control"), "no-store");
+assert.equal(await clientResponse.text(), "cached-payload");
 
 let response = await call("/api/session");
 assert.equal(response.status, 200);

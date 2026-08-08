@@ -23,6 +23,11 @@ assert.equal(result.cis[0].lineCount, 1);
 assert.equal(result.cis[0].outstanding, 600);
 assert.equal(result.summary.totalSales, 1000);
 assert.equal(result.summary.weightedMargin, 0.3);
+const serializedResult = JSON.stringify(result);
+assert.doesNotMatch(serializedResult, /record_id/);
+for (const internalId of ["recOrder", "recCustomer", "recSales", "recSupplier", "recPurchase", "recCi", "recShip", "recAr"]) {
+  assert.equal(serializedResult.includes(internalId), false);
+}
 
 const contractFallback = buildDashboard({
   ...raw,
@@ -35,4 +40,28 @@ const legitimateZero = buildDashboard({
   orders: [rec("recOrder", { ...raw.orders[0].fields, "订单金额": 0, "合同金额": 950 })]
 });
 assert.equal(legitimateZero.orders[0].amount, 0);
+
+const poFallback = buildDashboard({
+  ...raw,
+  orders: [rec("recOrder", { ...raw.orders[0].fields, "销售PI号": "", "客户PO号": "PO-FALLBACK" })]
+});
+assert.equal(poFallback.orders[0].orderNo, "PO-FALLBACK");
+
+const activeArOnly = buildDashboard({
+  ...raw,
+  arPlans: [
+    ...raw.arPlans,
+    rec("recPaused", { "应收计划编号": "ARCI-paused", "对应CI": linked("recCi"), "状态": "暂停", "未收金额": 999 }),
+    rec("recLegacy", { "应收计划编号": "AR-legacy", "对应CI": linked("recCi"), "状态": "待收", "未收金额": 888 })
+  ]
+});
+assert.equal(activeArOnly.cis[0].outstanding, 600);
+
+const supplierCurrency = buildDashboard({
+  ...raw,
+  supplierOrders: [rec("recSupplier", { ...raw.supplierOrders[0].fields, "原币币种": "CNY", "原币金额": 680, "折算USD金额": 100 })]
+});
+assert.equal(supplierCurrency.supplierOrders[0].originalCurrency, "CNY");
+assert.equal(supplierCurrency.supplierOrders[0].originalAmount, 680);
+assert.equal(supplierCurrency.supplierOrders[0].usdAmount, 100);
 console.log("transform tests passed");

@@ -24,6 +24,8 @@ npm run deploy
 
 修改 Secret 使用 Cloudflare 控制台或 `npx wrangler secret put <NAME>`。修改 `wrangler.jsonc` 后重新部署会覆盖对应远端明文变量，但会保留 Worker Secret。
 
+发布顺序固定为：本地检查 → Worker 部署 → 线上冒烟 → Git 提交/推送。不要在测试失败时部署或推送。
+
 ## 冒烟检查
 
 ```powershell
@@ -32,9 +34,12 @@ curl.exe -I $siteRoot
 curl.exe -i "$siteRoot/api/session"
 curl.exe -i "$siteRoot/api/order-status"
 curl.exe -i -H "cf-access-jwt-assertion: fake" "$siteRoot/api/order-status"
+curl.exe -I "$siteRoot/wincotek-logo.png"
 ```
 
-预期：主页 200；未登录 session 返回 `authenticated: false`；后两个订单 API 请求均返回 401。随后在浏览器登录，确认页面显示更新时间、订单/供应商订单/CI 数量且无错误提示。
+预期：主页和 Logo 返回 200；未登录 session 返回 `authenticated: false`；后两个订单 API 请求均返回 401。随后在浏览器登录，确认页面显示更新时间、订单/供应商订单/CI 数量且无错误提示。
+
+修改前端后还要检查登录页和侧栏 Logo 没有裁切；缓存未更新时使用 `Ctrl + F5` 强制刷新。当前 Logo 文件为 `public/wincotek-logo.png`，两个位置的显示比例在 `public/index.html` 的 `.auth-logo` 和 `.sidebar-logo` 中分别控制。
 
 ## 常见故障
 
@@ -42,7 +47,9 @@ curl.exe -i -H "cf-access-jwt-assertion: fake" "$siteRoot/api/order-status"
 - 飞书返回非 JSON：`FEISHU_BASE_TOKEN` 填成了完整 URL 或包含查询参数；只保留 token。
 - 登录接口 503：`DASHBOARD_PASSWORD` 少于 12 位，或 `SESSION_SECRET` 缺失。
 - 页面登录后 502：查看 Worker Observability 日志，优先检查飞书应用权限、Base token 和表 ID。
+- 页面仍显示旧版：先 `Ctrl + F5`；再确认最新 Worker Version 已部署，且 GitHub Pages 根 `index.html` 仍跳转到 Worker 地址。
+- 每次轮询都触发 8 表读取：确认 Worker 缓存响应使用 `public, max-age=<CACHE_SECONDS>`，而返回浏览器的响应为 `no-store`；不要把 `private` 响应直接写入 Cache API。
 
 ## 费用边界
 
-当前使用 Cloudflare Workers 免费额度，不启用需要绑卡并授权超额扣费的 Zero Trust 结算。应定期查看 Workers 用量；若业务规模接近免费额度，先暂停自动刷新或提高缓存时间，再决定是否升级。
+当前使用 Cloudflare Workers 免费额度。2026-08-08 此账号的 Zero Trust Free 激活流程要求提供付款方式并授权超额费用，因此未启用 Access。应定期查看 Workers 用量；若业务规模接近免费额度，先暂停自动刷新或提高缓存时间，再决定是否升级。
