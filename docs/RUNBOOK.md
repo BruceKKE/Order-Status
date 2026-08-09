@@ -43,6 +43,8 @@ curl.exe -I "$siteRoot/wincotek-logo.png"
 
 修改前端后还要检查登录页和侧栏 Logo 没有裁切；缓存未更新时使用 `Ctrl + F5` 强制刷新。当前 Logo 文件为 `public/wincotek-logo.png`，两个位置的显示比例在 `public/index.html` 的 `.auth-logo` 和 `.sidebar-logo` 中分别控制。
 
+筛选组件变更后，分别进入客户应收、客户订单、供应商订单和 CI 发货栏目：确认下拉名单来自当前数据；勾选一个及多个名称后行数正确；文字搜索可继续按订单号/CI/日期/状态过滤；“清除筛选”恢复全部记录；窄屏下拉框不超出视口。
+
 ## 常见故障
 
 - 飞书错误 `10003`：App ID 与 App Secret 不匹配，重新从同一应用复制。
