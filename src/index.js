@@ -13,7 +13,7 @@ let tokenCache = { token: "", expiresAt: 0 };
 const loginAttempts = new Map();
 const SESSION_COOKIE = "order_status_session";
 const SESSION_SECONDS = 12 * 60 * 60;
-const DASHBOARD_CACHE_VERSION = "2026-08-09-receivables-v2";
+const DASHBOARD_CACHE_VERSION = "2026-08-09-monthly-collections-v4";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -313,7 +313,14 @@ function groupBy(records, getKeys) {
 }
 
 export function buildDashboard(raw, now = new Date()) {
-  const customers = new Map(raw.customers.map(record => [record.record_id, textOf(record.fields?.["客户名称"] || record.fields?.["客户简称"] || record.fields?.["名称"])]));
+  const customerProfiles = new Map(raw.customers.map(record => {
+    const fields = record.fields || {};
+    return [record.record_id, {
+      name: textOf(fields["客户名称"] || fields["客户简称"] || fields["名称"]),
+      email: textOf(fields["邮箱"]),
+      contactName: textOf(fields["联系人"])
+    }];
+  }));
   const ciRecordIds = new Set(raw.cis.map(record => record.record_id));
   const orderNumbers = new Map(raw.orders.map(record => {
     const fields = record.fields || {};
@@ -351,7 +358,7 @@ export function buildDashboard(raw, now = new Date()) {
     const lineCount = (salesByOrder.get(record.record_id) || []).length;
     return {
       orderNo: textOf(f["销售PI号"]) || textOf(f["客户PO号"]),
-      customerName: customerLink.ids.map(id => customers.get(id)).filter(Boolean).join(" / ") || customerLink.label || "未归属客户",
+      customerName: customerLink.ids.map(id => customerProfiles.get(id)?.name).filter(Boolean).join(" / ") || customerLink.label || "未归属客户",
       date: dateOf(f["订单日期"]),
       currency: textOf(f["币种"]) || "USD",
       amount: firstNumber(f["订单金额"], f["合同金额"], f["自动订单金额"]),
@@ -388,7 +395,10 @@ export function buildDashboard(raw, now = new Date()) {
   const ciRows = raw.cis.map(record => {
     const f = record.fields || {};
     const customerLink = relation(f["客户"]);
-    const resolvedCustomerIds = customerLink.ids.filter(id => customers.has(id));
+    const linkedCustomerIds = [...new Set(customerLink.ids)];
+    const resolvedCustomerIds = linkedCustomerIds.filter(id => customerProfiles.has(id));
+    const resolvedCustomerProfiles = resolvedCustomerIds.map(id => customerProfiles.get(id));
+    const customerRelationValid = linkedCustomerIds.length === 1 && resolvedCustomerIds.length === 1;
     const orderLink = relation(f["对应客户订单"]);
     const linkedOrderNos = orderLink.ids.map(id => orderNumbers.get(id)).filter(Boolean);
     const lineCount = (shipmentByCi.get(record.record_id) || []).length;
@@ -398,7 +408,7 @@ export function buildDashboard(raw, now = new Date()) {
       const dueDate = dateOf(plan.fields?.["到期日"]);
       const outstanding = Math.max(0, numberOf(plan.fields?.["未收金额"]));
       const daysOverdue = dueDate && dueDate < today && outstanding > 0 ? daysBetweenDateKeys(today, dueDate) : 0;
-      return { dueDate, outstanding, daysOverdue };
+      return { dueDate, outstanding, daysOverdue, status: textOf(plan.fields?.["状态"]) };
     });
     const outstandingPlanMetrics = planMetrics.filter(plan => plan.outstanding > 0);
     const receivable = plans.reduce((sum, plan) => sum + numberOf(plan.fields?.["计划应收金额"]), 0);
@@ -413,7 +423,11 @@ export function buildDashboard(raw, now = new Date()) {
       ciNo: textOf(f["CI号"]),
       orderNos: linkedOrderNos.length ? linkedOrderNos : (orderLink.label ? [orderLink.label] : []),
       _customerKey: resolvedCustomerIds.length ? resolvedCustomerIds.sort().join("|") : `label:${customerLink.label || "未归属客户"}`,
-      customerName: resolvedCustomerIds.map(id => customers.get(id)).filter(Boolean).join(" / ") || customerLink.label || "未归属客户",
+      _customerRelationValid: customerRelationValid,
+      _customerEmail: customerRelationValid ? (resolvedCustomerProfiles[0]?.email || "") : "",
+      _contactName: customerRelationValid ? (resolvedCustomerProfiles[0]?.contactName || "") : "",
+      _schedules: outstandingPlanMetrics,
+      customerName: resolvedCustomerProfiles.map(profile => profile.name).filter(Boolean).join(" / ") || customerLink.label || "未归属客户",
       ciDate: dateOf(f["CI日期"]),
       shipmentDate: dateOf(f["发货日期"]),
       dueDate,
@@ -442,11 +456,15 @@ export function buildDashboard(raw, now = new Date()) {
   for (const ci of outstandingCis) {
     const row = customerReceivableMap.get(ci._customerKey) || {
       customerName: ci.customerName,
+      customerEmail: ci._customerEmail,
+      contactName: ci._contactName,
       totalOutstanding: 0,
       dueOutstanding: 0,
       over60Outstanding: 0,
-      items: []
+      items: [],
+      schedules: []
     };
+    row.emailEligible = (row.emailEligible ?? true) && ci._customerRelationValid;
     row.totalOutstanding += ci.outstanding;
     row.dueOutstanding += ci.dueOutstanding;
     row.over60Outstanding += ci.over60Outstanding;
@@ -464,18 +482,27 @@ export function buildDashboard(raw, now = new Date()) {
       overdueMoreThan60Days: ci.overdueMoreThan60Days,
       status: ci.status
     });
+    row.schedules.push(...ci._schedules.map(schedule => ({
+      ciNo: ci.ciNo,
+      orderNos: ci.orderNos,
+      dueDate: schedule.dueDate,
+      currency: ci.currency,
+      outstanding: schedule.outstanding,
+      status: schedule.status || ci.status
+    })));
     customerReceivableMap.set(ci._customerKey, row);
   }
   const receivablesByCustomer = [...customerReceivableMap.values()].map(row => ({
     ...row,
-    items: row.items.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
+    items: row.items.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")),
+    schedules: row.schedules.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
   })).sort((a, b) => b.dueOutstanding - a.dueOutstanding || b.totalOutstanding - a.totalOutstanding);
   return {
     meta: {
       generatedAt: now.toISOString(),
       timeZone: "Asia/Singapore",
       source: "Feishu Base",
-      grains: { sales: "order", shipment: "shipment/CI", receivable: "cash-allocation/ARCI" }
+      grains: { sales: "order", shipment: "shipment/CI", receivable: "ARCI" }
     },
     summary: {
       orderCount: orderRows.length,
@@ -490,11 +517,12 @@ export function buildDashboard(raw, now = new Date()) {
       totalDueOutstanding,
       totalOver60Outstanding,
       unlinkedArPlanCount,
-      conflictingArPlanCount
+      conflictingArPlanCount,
+      ambiguousCustomerCiCount: outstandingCis.filter(ci => !ci._customerRelationValid).length
     },
     orders: orderRows,
     supplierOrders: supplierRows,
-    cis: ciRows.map(({ _customerKey, ...row }) => row),
+    cis: ciRows.map(({ _customerKey, _customerRelationValid, _customerEmail, _contactName, _schedules, ...row }) => row),
     receivablesByCustomer
   };
 }

@@ -5,7 +5,7 @@ const rec = (record_id, fields) => ({ record_id, fields });
 const linked = id => [{ record_ids: [id], text: "linked", type: "text" }];
 const linkedMany = ids => [{ record_ids: ids, text: "linked", type: "text" }];
 const raw = {
-  customers: [rec("recCustomer", { "客户名称": "ACME" })],
+  customers: [rec("recCustomer", { "客户名称": "ACME", "邮箱": "finance@example.com", "联系人": "Alice" })],
   orders: [rec("recOrder", { "销售PI号": "PI-001", "客户PO号": "PO-001", "客户": linked("recCustomer"), "订单金额": 1000, "成本合计": 700, "毛利润": 300, "毛利率": 0.3, "订单日期": 1767225600000 })],
   salesLines: [rec("recSales", { "销售明细编号": "SL-1", "对应客户订单": linked("recOrder"), "产品型号": "X", "数量": 10, "销售金额": 1000 })],
   supplierOrders: [rec("recSupplier", { "采购订单号": "SC-1", "对应销售订单": linked("recOrder"), "采购金额": 700 })],
@@ -35,8 +35,19 @@ assert.equal(result.summary.outstandingCiCount, 1);
 assert.equal(result.summary.totalDueOutstanding, 600);
 assert.equal(result.summary.totalOver60Outstanding, 600);
 assert.equal(result.receivablesByCustomer[0].customerName, "ACME");
+assert.equal(result.receivablesByCustomer[0].customerEmail, "finance@example.com");
+assert.equal(result.receivablesByCustomer[0].contactName, "Alice");
+assert.equal(result.receivablesByCustomer[0].emailEligible, true);
 assert.equal(result.receivablesByCustomer[0].totalOutstanding, 600);
 assert.deepEqual(result.receivablesByCustomer[0].items[0].orderNos, ["PI-001"]);
+assert.deepEqual(result.receivablesByCustomer[0].schedules, [{
+  ciNo: "CI-1",
+  orderNos: ["PI-001"],
+  dueDate: "2026-03-01",
+  currency: "USD",
+  outstanding: 600,
+  status: "待收"
+}]);
 const serializedResult = JSON.stringify(result);
 assert.doesNotMatch(serializedResult, /record_id/);
 for (const internalId of ["recOrder", "recCustomer", "recSales", "recSupplier", "recPurchase", "recCi", "recShip", "recAr"]) {
@@ -83,6 +94,7 @@ assert.equal(splitSchedule.summary.totalDueOutstanding, 600);
 assert.equal(splitSchedule.summary.totalOver60Outstanding, 600);
 assert.equal(splitSchedule.receivablesByCustomer[0].items[0].dueOutstanding, 600);
 assert.equal(splitSchedule.receivablesByCustomer[0].items[0].over60Outstanding, 600);
+assert.deepEqual(splitSchedule.receivablesByCustomer[0].schedules.map(schedule => [schedule.dueDate, schedule.outstanding]), [["2026-03-01", 600], ["2026-06-01", 400]]);
 
 const exact60Days = buildDashboard({
   ...raw,
@@ -137,6 +149,25 @@ const sameNameCustomers = buildDashboard({
 }, new Date("2026-05-15T00:00:00Z"));
 assert.equal(sameNameCustomers.summary.customerReceivableCount, 2);
 assert.deepEqual(sameNameCustomers.receivablesByCustomer.map(group => group.totalOutstanding).sort((a, b) => a - b), [200, 600]);
+
+const ambiguousCustomerRelation = buildDashboard({
+  ...raw,
+  customers: [...raw.customers, rec("recCustomer2", { "客户名称": "BETA", "邮箱": "beta@example.com" })],
+  cis: [rec("recCi", { ...raw.cis[0].fields, "客户": linkedMany(["recCustomer", "recCustomer2"]) })]
+}, new Date("2026-05-15T00:00:00Z"));
+assert.equal(ambiguousCustomerRelation.summary.ambiguousCustomerCiCount, 1);
+assert.equal(ambiguousCustomerRelation.receivablesByCustomer[0].emailEligible, false);
+assert.equal(ambiguousCustomerRelation.receivablesByCustomer[0].customerEmail, "");
+assert.equal(ambiguousCustomerRelation.receivablesByCustomer[0].contactName, "");
+
+const partiallyDanglingCustomerRelation = buildDashboard({
+  ...raw,
+  cis: [rec("recCi", { ...raw.cis[0].fields, "客户": linkedMany(["recCustomer", "recDeletedCustomer"]) })]
+}, new Date("2026-05-15T00:00:00Z"));
+assert.equal(partiallyDanglingCustomerRelation.summary.ambiguousCustomerCiCount, 1);
+assert.equal(partiallyDanglingCustomerRelation.receivablesByCustomer[0].emailEligible, false);
+assert.equal(partiallyDanglingCustomerRelation.receivablesByCustomer[0].customerEmail, "");
+assert.doesNotMatch(JSON.stringify(partiallyDanglingCustomerRelation), /recDeletedCustomer/);
 
 const negativeBalance = buildDashboard({
   ...raw,
