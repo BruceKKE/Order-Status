@@ -13,6 +13,7 @@ let tokenCache = { token: "", expiresAt: 0 };
 const loginAttempts = new Map();
 const SESSION_COOKIE = "order_status_session";
 const SESSION_SECONDS = 12 * 60 * 60;
+const DASHBOARD_CACHE_VERSION = "2026-08-09-receivables-v2";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -212,7 +213,11 @@ function linkIds(value, result = new Set()) {
 }
 
 function relation(value) {
-  return { ids: [...linkIds(value)], label: textOf(value) };
+  const label = textOf(value);
+  return {
+    ids: [...linkIds(value)],
+    label: /(^|[^A-Za-z0-9])rec[A-Za-z0-9]+($|[^A-Za-z0-9])/.test(label) ? "" : label
+  };
 }
 
 function dateOf(value) {
@@ -238,6 +243,13 @@ function firstNumber(...values) {
     if (Number.isFinite(parsed)) return parsed;
   }
   return 0;
+}
+
+function daysBetweenDateKeys(later, earlier) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(later) || !/^\d{4}-\d{2}-\d{2}$/.test(earlier)) return 0;
+  const laterMs = Date.parse(`${later}T00:00:00Z`);
+  const earlierMs = Date.parse(`${earlier}T00:00:00Z`);
+  return Math.max(0, Math.floor((laterMs - earlierMs) / 86400000));
 }
 
 async function getTenantToken(env) {
@@ -300,16 +312,38 @@ function groupBy(records, getKeys) {
   return map;
 }
 
-export function buildDashboard(raw) {
+export function buildDashboard(raw, now = new Date()) {
   const customers = new Map(raw.customers.map(record => [record.record_id, textOf(record.fields?.["客户名称"] || record.fields?.["客户简称"] || record.fields?.["名称"])]));
+  const ciRecordIds = new Set(raw.cis.map(record => record.record_id));
+  const orderNumbers = new Map(raw.orders.map(record => {
+    const fields = record.fields || {};
+    return [record.record_id, textOf(fields["销售PI号"]) || textOf(fields["客户PO号"])];
+  }));
   const salesByOrder = groupBy(raw.salesLines, record => relation(record.fields?.["对应客户订单"]).ids);
   const purchaseBySupplier = groupBy(raw.purchaseLines, record => relation(record.fields?.["对应供应商订单"]).ids);
   const shipmentByCi = groupBy(raw.shipmentLines, record => relation(record.fields?.["对应CI"]).ids);
-  const arByCi = groupBy(raw.arPlans.filter(record => {
+  const activeArPlans = raw.arPlans.filter(record => {
     const id = textOf(record.fields?.["应收计划编号"]);
     const status = textOf(record.fields?.["状态"]);
     return id.startsWith("ARCI-") && status !== "暂停";
-  }), record => relation(record.fields?.["对应CI"]).ids);
+  });
+  const resolveArCi = record => {
+    const linkedIds = relation(record.fields?.["对应CI"]).ids.filter(id => ciRecordIds.has(id));
+    const fallbackId = textOf(record.fields?.["应收计划编号"]).slice("ARCI-".length);
+    const fallbackIds = ciRecordIds.has(fallbackId) ? [fallbackId] : [];
+    const conflict = linkedIds.length > 0 && fallbackIds.length > 0 && !linkedIds.includes(fallbackId);
+    return {
+      ids: conflict ? [] : (linkedIds.length ? linkedIds : fallbackIds),
+      conflict
+    };
+  };
+  const arCiResolutions = new Map(activeArPlans.map(record => [record, resolveArCi(record)]));
+  const unlinkedArPlanCount = activeArPlans.filter(record => {
+    const resolution = arCiResolutions.get(record);
+    return resolution.ids.length === 0 && !resolution.conflict;
+  }).length;
+  const conflictingArPlanCount = activeArPlans.filter(record => arCiResolutions.get(record).conflict).length;
+  const arByCi = groupBy(activeArPlans, record => arCiResolutions.get(record).ids);
 
   const orderRows = raw.orders.map(record => {
     const f = record.fields || {};
@@ -333,10 +367,11 @@ export function buildDashboard(raw) {
 
   const supplierRows = raw.supplierOrders.map(record => {
     const f = record.fields || {};
+    const supplierLink = relation(f["供应商"]);
     const lineCount = (purchaseBySupplier.get(record.record_id) || []).length;
     return {
       orderNo: textOf(f["采购订单号"] || f["供应商合同号"]),
-      supplierName: textOf(f["供应商"]) || "未归属供应商",
+      supplierName: supplierLink.label || "未归属供应商",
       date: dateOf(f["下单日期"]),
       originalCurrency: textOf(f["原币币种"] || f["币种"]),
       originalAmount: numberOf(f["原币金额"]),
@@ -352,23 +387,46 @@ export function buildDashboard(raw) {
 
   const ciRows = raw.cis.map(record => {
     const f = record.fields || {};
+    const customerLink = relation(f["客户"]);
+    const resolvedCustomerIds = customerLink.ids.filter(id => customers.has(id));
+    const orderLink = relation(f["对应客户订单"]);
+    const linkedOrderNos = orderLink.ids.map(id => orderNumbers.get(id)).filter(Boolean);
     const lineCount = (shipmentByCi.get(record.record_id) || []).length;
     const plans = arByCi.get(record.record_id) || [];
+    const today = dateOf(now.getTime());
+    const planMetrics = plans.map(plan => {
+      const dueDate = dateOf(plan.fields?.["到期日"]);
+      const outstanding = Math.max(0, numberOf(plan.fields?.["未收金额"]));
+      const daysOverdue = dueDate && dueDate < today && outstanding > 0 ? daysBetweenDateKeys(today, dueDate) : 0;
+      return { dueDate, outstanding, daysOverdue };
+    });
+    const outstandingPlanMetrics = planMetrics.filter(plan => plan.outstanding > 0);
     const receivable = plans.reduce((sum, plan) => sum + numberOf(plan.fields?.["计划应收金额"]), 0);
     const received = plans.reduce((sum, plan) => sum + numberOf(plan.fields?.["已收款金额"]), 0);
-    const outstanding = plans.reduce((sum, plan) => sum + numberOf(plan.fields?.["未收金额"]), 0);
-    const dueDates = plans.map(plan => dateOf(plan.fields?.["到期日"])).filter(Boolean).sort();
+    const outstanding = planMetrics.reduce((sum, plan) => sum + plan.outstanding, 0);
+    const dueDates = outstandingPlanMetrics.map(plan => plan.dueDate).filter(Boolean).sort();
+    const dueDate = dueDates[0] || "";
+    const dueOutstanding = outstandingPlanMetrics.filter(plan => plan.dueDate && plan.dueDate <= today).reduce((sum, plan) => sum + plan.outstanding, 0);
+    const over60Outstanding = outstandingPlanMetrics.filter(plan => plan.daysOverdue > 60).reduce((sum, plan) => sum + plan.outstanding, 0);
+    const daysOverdue = outstandingPlanMetrics.reduce((max, plan) => Math.max(max, plan.daysOverdue), 0);
     return {
       ciNo: textOf(f["CI号"]),
-      customerName: textOf(f["客户"]),
+      orderNos: linkedOrderNos.length ? linkedOrderNos : (orderLink.label ? [orderLink.label] : []),
+      _customerKey: resolvedCustomerIds.length ? resolvedCustomerIds.sort().join("|") : `label:${customerLink.label || "未归属客户"}`,
+      customerName: resolvedCustomerIds.map(id => customers.get(id)).filter(Boolean).join(" / ") || customerLink.label || "未归属客户",
       ciDate: dateOf(f["CI日期"]),
       shipmentDate: dateOf(f["发货日期"]),
-      dueDate: dueDates[0] || "",
+      dueDate,
       currency: textOf(f["币种"]) || "USD",
       amount: firstNumber(f["CI金额"], f["自动出货金额"]),
       receivable,
       received,
       outstanding,
+      dueOutstanding,
+      over60Outstanding,
+      isDue: dueOutstanding > 0,
+      daysOverdue,
+      overdueMoreThan60Days: over60Outstanding > 0,
       status: textOf(f["发货状态"] || f["CI状态"]),
       lineCount
     };
@@ -376,10 +434,45 @@ export function buildDashboard(raw) {
 
   const totalSales = orderRows.reduce((sum, row) => sum + row.amount, 0);
   const totalProfit = orderRows.reduce((sum, row) => sum + row.profit, 0);
-  const totalOutstanding = ciRows.reduce((sum, row) => sum + row.outstanding, 0);
+  const outstandingCis = ciRows.filter(row => row.outstanding > 0);
+  const totalOutstanding = outstandingCis.reduce((sum, row) => sum + row.outstanding, 0);
+  const totalDueOutstanding = outstandingCis.reduce((sum, row) => sum + row.dueOutstanding, 0);
+  const totalOver60Outstanding = outstandingCis.reduce((sum, row) => sum + row.over60Outstanding, 0);
+  const customerReceivableMap = new Map();
+  for (const ci of outstandingCis) {
+    const row = customerReceivableMap.get(ci._customerKey) || {
+      customerName: ci.customerName,
+      totalOutstanding: 0,
+      dueOutstanding: 0,
+      over60Outstanding: 0,
+      items: []
+    };
+    row.totalOutstanding += ci.outstanding;
+    row.dueOutstanding += ci.dueOutstanding;
+    row.over60Outstanding += ci.over60Outstanding;
+    row.items.push({
+      ciNo: ci.ciNo,
+      orderNos: ci.orderNos,
+      ciDate: ci.ciDate,
+      dueDate: ci.dueDate,
+      currency: ci.currency,
+      outstanding: ci.outstanding,
+      dueOutstanding: ci.dueOutstanding,
+      over60Outstanding: ci.over60Outstanding,
+      isDue: ci.isDue,
+      daysOverdue: ci.daysOverdue,
+      overdueMoreThan60Days: ci.overdueMoreThan60Days,
+      status: ci.status
+    });
+    customerReceivableMap.set(ci._customerKey, row);
+  }
+  const receivablesByCustomer = [...customerReceivableMap.values()].map(row => ({
+    ...row,
+    items: row.items.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
+  })).sort((a, b) => b.dueOutstanding - a.dueOutstanding || b.totalOutstanding - a.totalOutstanding);
   return {
     meta: {
-      generatedAt: new Date().toISOString(),
+      generatedAt: now.toISOString(),
       timeZone: "Asia/Singapore",
       source: "Feishu Base",
       grains: { sales: "order", shipment: "shipment/CI", receivable: "cash-allocation/ARCI" }
@@ -391,11 +484,18 @@ export function buildDashboard(raw) {
       totalSales,
       totalProfit,
       weightedMargin: totalSales ? totalProfit / totalSales : 0,
-      totalOutstanding
+      totalOutstanding,
+      outstandingCiCount: outstandingCis.length,
+      customerReceivableCount: receivablesByCustomer.length,
+      totalDueOutstanding,
+      totalOver60Outstanding,
+      unlinkedArPlanCount,
+      conflictingArPlanCount
     },
     orders: orderRows,
     supplierOrders: supplierRows,
-    cis: ciRows
+    cis: ciRows.map(({ _customerKey, ...row }) => row),
+    receivablesByCustomer
   };
 }
 
@@ -405,7 +505,7 @@ async function dashboardResponse(request, env, ctx) {
     if (!env[key]) return json({ error: `Server is missing ${key}` }, 503);
   }
   const cache = caches.default;
-  const cacheKey = new Request("https://order-status.internal/api/order-status", { method: "GET" });
+  const cacheKey = new Request(`https://order-status.internal/api/order-status/${DASHBOARD_CACHE_VERSION}`, { method: "GET" });
   const cached = await cache.match(cacheKey);
   if (cached) return withClientNoStore(cached);
 

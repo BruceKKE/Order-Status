@@ -26,6 +26,8 @@ npm run deploy
 
 发布顺序固定为：本地检查 → Worker 部署 → 线上冒烟 → Git 提交/推送。不要在测试失败时部署或推送。
 
+修改浏览器 DTO 字段时，必须同步升级 `src/index.js` 的 `DASHBOARD_CACHE_VERSION`，防止新前端命中旧结构缓存。
+
 ## 冒烟检查
 
 ```powershell
@@ -37,7 +39,7 @@ curl.exe -i -H "cf-access-jwt-assertion: fake" "$siteRoot/api/order-status"
 curl.exe -I "$siteRoot/wincotek-logo.png"
 ```
 
-预期：主页和 Logo 返回 200；未登录 session 返回 `authenticated: false`；后两个订单 API 请求均返回 401。随后在浏览器登录，确认页面显示更新时间、订单/供应商订单/CI 数量且无错误提示。
+预期：主页和 Logo 返回 200；未登录 session 返回 `authenticated: false`；后两个订单 API 请求均返回 401。随后在浏览器登录，确认页面显示更新时间、订单/供应商订单/CI 数量且无错误提示；“客户应收汇总”能显示客户总额、到期金额、逾期超过 60 天金额及 CI/对应订单明细，业务概览的近期提醒不含已收清 CI。
 
 修改前端后还要检查登录页和侧栏 Logo 没有裁切；缓存未更新时使用 `Ctrl + F5` 强制刷新。当前 Logo 文件为 `public/wincotek-logo.png`，两个位置的显示比例在 `public/index.html` 的 `.auth-logo` 和 `.sidebar-logo` 中分别控制。
 
