@@ -25,6 +25,7 @@ assert.equal(result.cis[0].customerName, "ACME");
 assert.deepEqual(result.cis[0].orderNos, ["PI-001"]);
 assert.equal(result.cis[0].outstanding, 600);
 assert.equal(result.cis[0].dueOutstanding, 600);
+assert.equal(result.cis[0].dueSoonOutstanding, 0);
 assert.equal(result.cis[0].over60Outstanding, 600);
 assert.equal(result.cis[0].isDue, true);
 assert.equal(result.cis[0].daysOverdue, 75);
@@ -33,6 +34,8 @@ assert.equal(result.summary.totalSales, 1000);
 assert.equal(result.summary.weightedMargin, 0.3);
 assert.equal(result.summary.outstandingCiCount, 1);
 assert.equal(result.summary.totalDueOutstanding, 600);
+assert.equal(result.summary.totalDueSoonOutstanding, 0);
+assert.equal(result.summary.dueSoonCiCount, 0);
 assert.equal(result.summary.totalOver60Outstanding, 600);
 assert.equal(result.receivablesByCustomer[0].customerName, "ACME");
 assert.equal(result.receivablesByCustomer[0].customerEmail, "finance@example.com");
@@ -46,6 +49,13 @@ assert.deepEqual(result.receivablesByCustomer[0].schedules, [{
   dueDate: "2026-03-01",
   currency: "USD",
   outstanding: 600,
+  dueSoonOutstanding: 0,
+  overdueOutstanding: 600,
+  over60Outstanding: 600,
+  daysUntilDue: 0,
+  daysOverdue: 75,
+  isDueSoon: false,
+  overdueMoreThan60Days: true,
   status: "待收"
 }]);
 const serializedResult = JSON.stringify(result);
@@ -91,6 +101,7 @@ const splitSchedule = buildDashboard({
 }, new Date("2026-05-15T00:00:00Z"));
 assert.equal(splitSchedule.summary.totalOutstanding, 1000);
 assert.equal(splitSchedule.summary.totalDueOutstanding, 600);
+assert.equal(splitSchedule.summary.totalDueSoonOutstanding, 0);
 assert.equal(splitSchedule.summary.totalOver60Outstanding, 600);
 assert.equal(splitSchedule.receivablesByCustomer[0].items[0].dueOutstanding, 600);
 assert.equal(splitSchedule.receivablesByCustomer[0].items[0].over60Outstanding, 600);
@@ -109,6 +120,68 @@ const over60Days = buildDashboard({
 }, new Date("2026-05-15T00:00:00Z"));
 assert.equal(over60Days.cis[0].daysOverdue, 61);
 assert.equal(over60Days.summary.totalOver60Outstanding, 600);
+
+const dueSoonBoundary = buildDashboard({
+  ...raw,
+  arPlans: [
+    rec("recArToday", { ...raw.arPlans[0].fields, "到期日": "2026-05-15", "未收金额": 100 }),
+    rec("recArDay14", { ...raw.arPlans[0].fields, "应收计划编号": "ARCI-recCi-day14", "到期日": "2026-05-29", "未收金额": 200 }),
+    rec("recArDay15", { ...raw.arPlans[0].fields, "应收计划编号": "ARCI-recCi-day15", "到期日": "2026-05-30", "未收金额": 300 })
+  ]
+}, new Date("2026-05-15T00:00:00Z"));
+assert.equal(dueSoonBoundary.cis[0].dueSoonOutstanding, 300);
+assert.equal(dueSoonBoundary.cis[0].daysUntilDue, 0);
+assert.equal(dueSoonBoundary.cis[0].isDueSoon, true);
+assert.equal(dueSoonBoundary.summary.totalDueSoonOutstanding, 300);
+assert.equal(dueSoonBoundary.summary.dueSoonCiCount, 1);
+assert.equal(dueSoonBoundary.receivablesByCustomer[0].dueSoonOutstanding, 300);
+assert.equal(dueSoonBoundary.receivablesByCustomer[0].items[0].dueSoonOutstanding, 300);
+assert.deepEqual(dueSoonBoundary.receivableAlerts.map(item => [item.dueDate, item.outstanding]), [["2026-05-15", 100], ["2026-05-29", 200]]);
+
+const splitAlertDates = buildDashboard({
+  ...raw,
+  arPlans: [
+    rec("recArYesterday", { ...raw.arPlans[0].fields, "到期日": "2026-05-14", "未收金额": 100 }),
+    rec("recArSoon", { ...raw.arPlans[0].fields, "应收计划编号": "ARCI-recCi-soon", "到期日": "2026-05-25", "未收金额": 200 })
+  ]
+}, new Date("2026-05-15T00:00:00Z"));
+assert.deepEqual(splitAlertDates.receivableAlerts.map(item => [item.dueDate, item.outstanding]), [["2026-05-25", 200]]);
+
+const multiCurrencyAlerts = buildDashboard({
+  ...raw,
+  cis: [
+    rec("recCi", { ...raw.cis[0].fields, "币种": "USD" }),
+    rec("recCiEur", { ...raw.cis[0].fields, "CI号": "CI-EUR", "币种": "EUR" })
+  ],
+  arPlans: [
+    rec("recArUsd", { ...raw.arPlans[0].fields, "到期日": "2026-05-20", "未收金额": 100 }),
+    rec("recArEur", { ...raw.arPlans[0].fields, "应收计划编号": "ARCI-recCiEur", "对应CI": linked("recCiEur"), "到期日": "2026-05-20", "未收金额": 200 })
+  ]
+}, new Date("2026-05-15T00:00:00Z"));
+assert.deepEqual(multiCurrencyAlerts.summary.dueSoonTotals, [["EUR", 200], ["USD", 100]]);
+
+const multiCurrencyOverdue = buildDashboard({
+  ...raw,
+  cis: [
+    rec("recCi", { ...raw.cis[0].fields, "币种": "USD" }),
+    rec("recCiEur", { ...raw.cis[0].fields, "CI号": "CI-EUR", "币种": "EUR" })
+  ],
+  arPlans: [
+    rec("recArUsd", { ...raw.arPlans[0].fields, "到期日": "2026-03-01", "未收金额": 100 }),
+    rec("recArEur", { ...raw.arPlans[0].fields, "应收计划编号": "ARCI-recCiEur", "对应CI": linked("recCiEur"), "到期日": "2026-03-01", "未收金额": 200 })
+  ]
+}, new Date("2026-05-15T00:00:00Z"));
+assert.deepEqual(multiCurrencyOverdue.summary.overdueTotals, [["EUR", 200], ["USD", 100]]);
+assert.deepEqual(multiCurrencyOverdue.summary.over60Totals, [["EUR", 200], ["USD", 100]]);
+
+const multiCiArRelation = buildDashboard({
+  ...raw,
+  cis: [raw.cis[0], rec("recCiTwo", { ...raw.cis[0].fields, "CI号": "CI-2" })],
+  arPlans: [rec("recArMultiCi", { ...raw.arPlans[0].fields, "应收计划编号": "ARCI-invalid-multi", "对应CI": linkedMany(["recCi", "recCiTwo"]) })]
+}, new Date("2026-05-15T00:00:00Z"));
+assert.equal(multiCiArRelation.summary.totalOutstanding, 0);
+assert.equal(multiCiArRelation.summary.conflictingArPlanCount, 1);
+assert.deepEqual(multiCiArRelation.receivableAlerts, []);
 
 const missingArRelationFallback = buildDashboard({
   ...raw,

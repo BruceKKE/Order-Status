@@ -39,7 +39,7 @@ curl.exe -i -H "cf-access-jwt-assertion: fake" "$siteRoot/api/order-status"
 curl.exe -I "$siteRoot/wincotek-logo.png"
 ```
 
-预期：主页和 Logo 返回 200；未登录 session 返回 `authenticated: false`；后两个订单 API 请求均返回 401。随后在浏览器登录，确认页面显示更新时间、订单/供应商订单/CI 数量且无错误提示；“客户应收汇总”能显示客户总额、到期金额、逾期超过 60 天金额及 CI/对应订单明细，业务概览的近期提醒不含已收清 CI。
+预期：主页和 Logo 返回 200；未登录 session 返回 `authenticated: false`；后两个订单 API 请求均返回 401。随后在浏览器登录，确认页面显示更新时间、订单/供应商订单/CI 数量且无错误提示；“客户应收汇总”能显示客户总额、今天至未来 14 天到期、已逾期、逾期超过 60 天金额及 CI/对应订单明细。业务概览“应收预警”按 ARCI 计划显示真实到期日，只含今天至未来 14 天到期或逾期超过 60 天的款项，不含已收清计划；三类预警金额都按币种分开。
 
 修改前端后还要检查登录页和侧栏 Logo 没有裁切；缓存未更新时使用 `Ctrl + F5` 强制刷新。当前 Logo 文件为 `public/wincotek-logo.png`，两个位置的显示比例在 `public/index.html` 的 `.auth-logo` 和 `.sidebar-logo` 中分别控制。
 

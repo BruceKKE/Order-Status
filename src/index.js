@@ -13,7 +13,7 @@ let tokenCache = { token: "", expiresAt: 0 };
 const loginAttempts = new Map();
 const SESSION_COOKIE = "order_status_session";
 const SESSION_SECONDS = 12 * 60 * 60;
-const DASHBOARD_CACHE_VERSION = "2026-08-09-monthly-collections-v4";
+const DASHBOARD_CACHE_VERSION = "2026-08-09-receivable-alerts-v5";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -252,6 +252,15 @@ function daysBetweenDateKeys(later, earlier) {
   return Math.max(0, Math.floor((laterMs - earlierMs) / 86400000));
 }
 
+function totalsByCurrency(rows, amountKey) {
+  const totals = new Map();
+  for (const row of rows) {
+    const currency = textOf(row.currency) || "USD";
+    totals.set(currency, (totals.get(currency) || 0) + numberOf(row[amountKey]));
+  }
+  return [...totals.entries()].filter(([, amount]) => amount > 0).sort(([a], [b]) => a.localeCompare(b));
+}
+
 async function getTenantToken(env) {
   if (tokenCache.token && Date.now() < tokenCache.expiresAt) return tokenCache.token;
   const response = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
@@ -339,9 +348,11 @@ export function buildDashboard(raw, now = new Date()) {
     const fallbackId = textOf(record.fields?.["应收计划编号"]).slice("ARCI-".length);
     const fallbackIds = ciRecordIds.has(fallbackId) ? [fallbackId] : [];
     const conflict = linkedIds.length > 0 && fallbackIds.length > 0 && !linkedIds.includes(fallbackId);
+    const resolvedIds = linkedIds.length ? linkedIds : fallbackIds;
+    const ambiguous = resolvedIds.length > 1;
     return {
-      ids: conflict ? [] : (linkedIds.length ? linkedIds : fallbackIds),
-      conflict
+      ids: conflict || ambiguous ? [] : resolvedIds,
+      conflict: conflict || ambiguous
     };
   };
   const arCiResolutions = new Map(activeArPlans.map(record => [record, resolveArCi(record)]));
@@ -408,7 +419,11 @@ export function buildDashboard(raw, now = new Date()) {
       const dueDate = dateOf(plan.fields?.["到期日"]);
       const outstanding = Math.max(0, numberOf(plan.fields?.["未收金额"]));
       const daysOverdue = dueDate && dueDate < today && outstanding > 0 ? daysBetweenDateKeys(today, dueDate) : 0;
-      return { dueDate, outstanding, daysOverdue, status: textOf(plan.fields?.["状态"]) };
+      const daysUntilDue = dueDate && dueDate >= today && outstanding > 0 ? daysBetweenDateKeys(dueDate, today) : 0;
+      const dueSoonOutstanding = dueDate && dueDate >= today && daysUntilDue <= 14 ? outstanding : 0;
+      const overdueOutstanding = dueDate && dueDate < today ? outstanding : 0;
+      const over60Outstanding = daysOverdue > 60 ? outstanding : 0;
+      return { dueDate, outstanding, daysOverdue, daysUntilDue, dueSoonOutstanding, overdueOutstanding, over60Outstanding, status: textOf(plan.fields?.["状态"]) };
     });
     const outstandingPlanMetrics = planMetrics.filter(plan => plan.outstanding > 0);
     const receivable = plans.reduce((sum, plan) => sum + numberOf(plan.fields?.["计划应收金额"]), 0);
@@ -417,8 +432,11 @@ export function buildDashboard(raw, now = new Date()) {
     const dueDates = outstandingPlanMetrics.map(plan => plan.dueDate).filter(Boolean).sort();
     const dueDate = dueDates[0] || "";
     const dueOutstanding = outstandingPlanMetrics.filter(plan => plan.dueDate && plan.dueDate <= today).reduce((sum, plan) => sum + plan.outstanding, 0);
-    const over60Outstanding = outstandingPlanMetrics.filter(plan => plan.daysOverdue > 60).reduce((sum, plan) => sum + plan.outstanding, 0);
+    const dueSoonOutstanding = outstandingPlanMetrics.reduce((sum, plan) => sum + plan.dueSoonOutstanding, 0);
+    const overdueOutstanding = outstandingPlanMetrics.reduce((sum, plan) => sum + plan.overdueOutstanding, 0);
+    const over60Outstanding = outstandingPlanMetrics.reduce((sum, plan) => sum + plan.over60Outstanding, 0);
     const daysOverdue = outstandingPlanMetrics.reduce((max, plan) => Math.max(max, plan.daysOverdue), 0);
+    const daysUntilDue = outstandingPlanMetrics.filter(plan => plan.dueSoonOutstanding > 0).reduce((min, plan) => Math.min(min, plan.daysUntilDue), Infinity);
     return {
       ciNo: textOf(f["CI号"]),
       orderNos: linkedOrderNos.length ? linkedOrderNos : (orderLink.label ? [orderLink.label] : []),
@@ -437,9 +455,13 @@ export function buildDashboard(raw, now = new Date()) {
       received,
       outstanding,
       dueOutstanding,
+      dueSoonOutstanding,
+      overdueOutstanding,
       over60Outstanding,
       isDue: dueOutstanding > 0,
+      isDueSoon: dueSoonOutstanding > 0,
       daysOverdue,
+      daysUntilDue: Number.isFinite(daysUntilDue) ? daysUntilDue : 0,
       overdueMoreThan60Days: over60Outstanding > 0,
       status: textOf(f["发货状态"] || f["CI状态"]),
       lineCount
@@ -451,6 +473,8 @@ export function buildDashboard(raw, now = new Date()) {
   const outstandingCis = ciRows.filter(row => row.outstanding > 0);
   const totalOutstanding = outstandingCis.reduce((sum, row) => sum + row.outstanding, 0);
   const totalDueOutstanding = outstandingCis.reduce((sum, row) => sum + row.dueOutstanding, 0);
+  const totalDueSoonOutstanding = outstandingCis.reduce((sum, row) => sum + row.dueSoonOutstanding, 0);
+  const totalOverdueOutstanding = outstandingCis.reduce((sum, row) => sum + row.overdueOutstanding, 0);
   const totalOver60Outstanding = outstandingCis.reduce((sum, row) => sum + row.over60Outstanding, 0);
   const customerReceivableMap = new Map();
   for (const ci of outstandingCis) {
@@ -460,6 +484,8 @@ export function buildDashboard(raw, now = new Date()) {
       contactName: ci._contactName,
       totalOutstanding: 0,
       dueOutstanding: 0,
+      dueSoonOutstanding: 0,
+      overdueOutstanding: 0,
       over60Outstanding: 0,
       items: [],
       schedules: []
@@ -467,6 +493,8 @@ export function buildDashboard(raw, now = new Date()) {
     row.emailEligible = (row.emailEligible ?? true) && ci._customerRelationValid;
     row.totalOutstanding += ci.outstanding;
     row.dueOutstanding += ci.dueOutstanding;
+    row.dueSoonOutstanding += ci.dueSoonOutstanding;
+    row.overdueOutstanding += ci.overdueOutstanding;
     row.over60Outstanding += ci.over60Outstanding;
     row.items.push({
       ciNo: ci.ciNo,
@@ -476,9 +504,13 @@ export function buildDashboard(raw, now = new Date()) {
       currency: ci.currency,
       outstanding: ci.outstanding,
       dueOutstanding: ci.dueOutstanding,
+      dueSoonOutstanding: ci.dueSoonOutstanding,
+      overdueOutstanding: ci.overdueOutstanding,
       over60Outstanding: ci.over60Outstanding,
       isDue: ci.isDue,
+      isDueSoon: ci.isDueSoon,
       daysOverdue: ci.daysOverdue,
+      daysUntilDue: ci.daysUntilDue,
       overdueMoreThan60Days: ci.overdueMoreThan60Days,
       status: ci.status
     });
@@ -488,15 +520,30 @@ export function buildDashboard(raw, now = new Date()) {
       dueDate: schedule.dueDate,
       currency: ci.currency,
       outstanding: schedule.outstanding,
+      dueSoonOutstanding: schedule.dueSoonOutstanding,
+      overdueOutstanding: schedule.overdueOutstanding,
+      over60Outstanding: schedule.over60Outstanding,
+      daysUntilDue: schedule.daysUntilDue,
+      daysOverdue: schedule.daysOverdue,
+      isDueSoon: schedule.dueSoonOutstanding > 0,
+      overdueMoreThan60Days: schedule.over60Outstanding > 0,
       status: schedule.status || ci.status
     })));
     customerReceivableMap.set(ci._customerKey, row);
   }
   const receivablesByCustomer = [...customerReceivableMap.values()].map(row => ({
     ...row,
+    dueSoonTotals: totalsByCurrency(row.schedules, "dueSoonOutstanding"),
+    overdueTotals: totalsByCurrency(row.schedules, "overdueOutstanding"),
+    over60Totals: totalsByCurrency(row.schedules, "over60Outstanding"),
     items: row.items.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")),
     schedules: row.schedules.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
   })).sort((a, b) => b.dueOutstanding - a.dueOutstanding || b.totalOutstanding - a.totalOutstanding);
+  const receivableAlerts = receivablesByCustomer.flatMap(group => group.schedules
+    .filter(schedule => schedule.dueSoonOutstanding > 0 || schedule.over60Outstanding > 0)
+    .map(schedule => ({ ...schedule, customerName: group.customerName })))
+    .sort((a, b) => (b.over60Outstanding || 0) - (a.over60Outstanding || 0) || (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+  const receivableSchedules = receivablesByCustomer.flatMap(group => group.schedules);
   return {
     meta: {
       generatedAt: now.toISOString(),
@@ -515,7 +562,13 @@ export function buildDashboard(raw, now = new Date()) {
       outstandingCiCount: outstandingCis.length,
       customerReceivableCount: receivablesByCustomer.length,
       totalDueOutstanding,
+      totalDueSoonOutstanding,
+      dueSoonTotals: totalsByCurrency(receivableAlerts, "dueSoonOutstanding"),
+      dueSoonCiCount: outstandingCis.filter(ci => ci.dueSoonOutstanding > 0).length,
+      totalOverdueOutstanding,
+      overdueTotals: totalsByCurrency(receivableSchedules, "overdueOutstanding"),
       totalOver60Outstanding,
+      over60Totals: totalsByCurrency(receivableSchedules, "over60Outstanding"),
       unlinkedArPlanCount,
       conflictingArPlanCount,
       ambiguousCustomerCiCount: outstandingCis.filter(ci => !ci._customerRelationValid).length
@@ -523,7 +576,8 @@ export function buildDashboard(raw, now = new Date()) {
     orders: orderRows,
     supplierOrders: supplierRows,
     cis: ciRows.map(({ _customerKey, _customerRelationValid, _customerEmail, _contactName, _schedules, ...row }) => row),
-    receivablesByCustomer
+    receivablesByCustomer,
+    receivableAlerts
   };
 }
 
